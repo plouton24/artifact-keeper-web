@@ -521,6 +521,77 @@ describe("repositoriesApi.create error path", () => {
   });
 });
 
+describe("repositoriesApi Debian configuration", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const debianConfig = {
+    distributions: ["bookworm"],
+    components: ["main"],
+    architectures: ["amd64", "all"],
+    signing_enabled: false,
+    upstream_base_url: "https://deb.debian.org/debian",
+    sync: {
+      base_url: "https://deb.debian.org/debian",
+      distributions: ["bookworm"],
+      components: ["main"],
+      architectures: ["amd64", "all"],
+      cache_policy: "always_revalidate",
+      download_policy: "on_demand",
+      re_sign: false,
+    },
+  };
+
+  it("preserves backend Debian configuration in adapted responses", async () => {
+    mockGetRepository.mockResolvedValue({
+      data: sdkRepo({ format: "debian", debian_config: debianConfig }),
+      error: undefined,
+    });
+
+    const result = await repositoriesApi.get("debian-proxy");
+    expect(result.debian_config).toEqual(debianConfig);
+  });
+
+  it("forwards Debian configuration when creating a repository", async () => {
+    mockCreateRepository.mockResolvedValue({
+      data: sdkRepo({ format: "debian", debian_config: debianConfig }),
+      error: undefined,
+    });
+
+    await repositoriesApi.create({
+      key: "debian-proxy",
+      name: "Debian Proxy",
+      format: "debian",
+      repo_type: "remote",
+      upstream_url: "https://deb.debian.org/debian",
+      debian_config: debianConfig,
+    });
+
+    expect(mockCreateRepository).toHaveBeenCalledWith({
+      body: expect.objectContaining({ debian_config: debianConfig }),
+    });
+  });
+
+  it("forwards Debian configuration and upstream URL on update", async () => {
+    mockUpdateRepository.mockResolvedValue({
+      data: sdkRepo({ format: "debian", debian_config: debianConfig }),
+      error: undefined,
+    });
+
+    await repositoriesApi.update("debian-proxy", {
+      upstream_url: "https://deb.debian.org/debian",
+      debian_config: debianConfig,
+    });
+
+    expect(mockUpdateRepository).toHaveBeenCalledWith({
+      path: { key: "debian-proxy" },
+      body: expect.objectContaining({
+        upstream_url: "https://deb.debian.org/debian",
+        debian_config: debianConfig,
+      }),
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Virtual member management
 // ---------------------------------------------------------------------------

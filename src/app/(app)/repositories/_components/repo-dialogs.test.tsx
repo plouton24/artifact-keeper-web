@@ -88,6 +88,81 @@ const defaultProps = {
   availableRepos: [],
 };
 
+describe('RepoDialogs - Debian/APT configuration', () => {
+  beforeEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('shows Debian layout fields only after Debian/APT is selected', async () => {
+    const user = userEvent.setup();
+    render(<RepoDialogs {...defaultProps} />);
+
+    expect(screen.queryByText('Debian/APT configuration')).toBeNull();
+    const dialog = screen.getByRole('dialog');
+    const selects = within(dialog).getAllByTestId('mock-select');
+    await user.selectOptions(selects[0], 'debian');
+
+    expect(screen.getByText('Debian/APT configuration')).toBeTruthy();
+    expect(screen.getByLabelText('Distributions')).toBeTruthy();
+    expect(screen.getByLabelText('Components')).toBeTruthy();
+    expect(screen.getByLabelText('Architectures')).toBeTruthy();
+    expect(screen.queryByText('Remote cache and sync')).toBeNull();
+  });
+
+  it('submits remote Debian cache and sync settings to the backend payload', () => {
+    const onCreateSubmit = vi.fn();
+    render(<RepoDialogs {...defaultProps} onCreateSubmit={onCreateSubmit} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'debian-proxy' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Debian Proxy' } });
+    fireEvent.change(screen.getByLabelText('Distributions'), {
+      target: { value: 'bookworm, bookworm-updates' },
+    });
+    fireEvent.change(screen.getByLabelText('Components'), {
+      target: { value: 'main, contrib' },
+    });
+    fireEvent.change(screen.getByLabelText('Architectures'), {
+      target: { value: 'amd64, arm64, all' },
+    });
+
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[2], { target: { value: 'no_cache' } });
+    fireEvent.change(selects[3], { target: { value: 'immediate' } });
+    fireEvent.click(screen.getByLabelText('Re-sign mirrored metadata'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    expect(onCreateSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format: 'debian',
+        repo_type: 'remote',
+        upstream_url: 'https://deb.debian.org/debian',
+        debian_config: expect.objectContaining({
+          distributions: ['bookworm', 'bookworm-updates'],
+          components: ['main', 'contrib'],
+          architectures: ['amd64', 'arm64', 'all'],
+          upstream_base_url: 'https://deb.debian.org/debian',
+          sync: {
+            base_url: 'https://deb.debian.org/debian',
+            distributions: ['bookworm', 'bookworm-updates'],
+            components: ['main', 'contrib'],
+            architectures: ['amd64', 'arm64', 'all'],
+            cache_policy: 'no_cache',
+            download_policy: 'immediate',
+            re_sign: true,
+          },
+        }),
+      }),
+    );
+  });
+});
+
 describe('RepoDialogs - Staging Hint', () => {
   beforeEach(() => {
     vi.clearAllMocks();

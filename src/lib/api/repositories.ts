@@ -30,6 +30,7 @@ import type {
   VirtualMembersResponse,
   RepositoryFormat,
   RepositoryType,
+  DebianRepositoryConfig,
 } from '@/types';
 
 export interface ListRepositoriesParams {
@@ -143,6 +144,11 @@ const REPO_FORMATS = new Set<RepositoryFormat>([
 ]);
 
 function adaptRepository(sdk: RepositoryResponse): Repository {
+  // The backend already exposes Debian config, but the published generated SDK
+  // has not picked up the new OpenAPI field yet. Preserve it during adaptation.
+  const extended = sdk as RepositoryResponse & {
+    debian_config?: DebianRepositoryConfig;
+  };
   return {
     id: sdk.id,
     key: sdk.key,
@@ -165,6 +171,7 @@ function adaptRepository(sdk: RepositoryResponse): Repository {
     upstream_url: sdk.upstream_url ?? undefined,
     upstream_auth_type: sdk.upstream_auth_type ?? undefined,
     upstream_auth_configured: sdk.upstream_auth_configured,
+    debian_config: extended.debian_config,
     created_at: sdk.created_at,
     updated_at: sdk.updated_at,
   };
@@ -206,7 +213,9 @@ export const repositoriesApi = {
   },
 
   create: async (input: CreateRepositoryRequest): Promise<Repository> => {
-    const body: SdkCreateRepositoryRequest = {
+    const body: SdkCreateRepositoryRequest & {
+      debian_config?: DebianRepositoryConfig;
+    } = {
       key: input.key,
       name: input.name,
       description: input.description,
@@ -225,6 +234,7 @@ export const repositoriesApi = {
       upstream_auth_type: input.upstream_auth_type,
       upstream_username: input.upstream_username,
       upstream_password: input.upstream_password,
+      debian_config: input.debian_config,
     };
     const { data, error } = await createRepository({ body });
     if (error) throw error;
@@ -232,12 +242,17 @@ export const repositoriesApi = {
   },
 
   update: async (key: string, input: Partial<CreateRepositoryRequest>): Promise<Repository> => {
-    const body: SdkUpdateRepositoryRequest = {
+    const body: SdkUpdateRepositoryRequest & {
+      upstream_url?: string;
+      debian_config?: DebianRepositoryConfig;
+    } = {
       name: input.name,
       description: input.description,
       is_public: input.is_public,
       quota_bytes: input.quota_bytes,
       key: input.key,
+      ...(input.upstream_url !== undefined ? { upstream_url: input.upstream_url } : {}),
+      ...(input.debian_config !== undefined ? { debian_config: input.debian_config } : {}),
     };
     const { data, error } = await updateRepository({ path: { key }, body });
     if (error) throw error;

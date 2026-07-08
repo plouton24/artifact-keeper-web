@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import type { Repository, CreateRepositoryRequest, RepositoryFormat, RepositoryType, VirtualRepoMemberInput } from "@/types";
+import type {
+  Repository,
+  CreateRepositoryRequest,
+  DebianRepositoryConfig,
+  RepositoryFormat,
+  RepositoryType,
+  VirtualRepoMemberInput,
+} from "@/types";
 import { FORMAT_OPTIONS, TYPE_OPTIONS } from "../_lib/constants";
 import { DEFAULT_UPSTREAM_URLS } from "../_lib/default-upstream-urls";
 
@@ -56,6 +63,284 @@ export function bytesToQuota(bytes: number | undefined | null): { value: string;
   return { value: String(Math.round(bytes / BYTES_PER_MB)), unit: "MB" };
 }
 
+interface DebianFormValues {
+  distributions: string;
+  suite: string;
+  codename: string;
+  releaseDescription: string;
+  components: string;
+  architectures: string;
+  signingEnabled: boolean;
+  signingKeyId: string;
+  cachePolicy: "metadata_ttl" | "always_revalidate" | "no_cache";
+  downloadPolicy: "on_demand" | "immediate";
+  reSign: boolean;
+}
+
+const EMPTY_DEBIAN_FORM: DebianFormValues = {
+  distributions: "",
+  suite: "",
+  codename: "",
+  releaseDescription: "",
+  components: "",
+  architectures: "",
+  signingEnabled: false,
+  signingKeyId: "",
+  cachePolicy: "metadata_ttl",
+  downloadPolicy: "on_demand",
+  reSign: false,
+};
+
+const DEBIAN_IDENTIFIER_LIST_PATTERN =
+  "[A-Za-z0-9._+\\-]+(?:\\s*,\\s*[A-Za-z0-9._+\\-]+)*";
+const DEBIAN_IDENTIFIER_PATTERN = "[A-Za-z0-9._+\\-]+";
+
+function splitDebianIdentifiers(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function debianConfigToForm(config?: DebianRepositoryConfig): DebianFormValues {
+  return {
+    distributions: config?.distributions.join(", ") ?? "",
+    suite: config?.suite ?? "",
+    codename: config?.codename ?? "",
+    releaseDescription: config?.description ?? "",
+    components: config?.components.join(", ") ?? "",
+    architectures: config?.architectures.join(", ") ?? "",
+    signingEnabled: config?.signing_enabled ?? false,
+    signingKeyId: config?.signing_key_id ?? "",
+    cachePolicy:
+      config?.sync?.cache_policy === "always_revalidate" ||
+      config?.sync?.cache_policy === "no_cache"
+        ? config.sync.cache_policy
+        : "metadata_ttl",
+    downloadPolicy:
+      config?.sync?.download_policy === "immediate" ? "immediate" : "on_demand",
+    reSign: config?.sync?.re_sign ?? false,
+  };
+}
+
+function buildDebianConfig(
+  values: DebianFormValues,
+  isRemote: boolean,
+  upstreamUrl?: string,
+): DebianRepositoryConfig {
+  const distributions = splitDebianIdentifiers(values.distributions);
+  const components = splitDebianIdentifiers(values.components);
+  const architectures = splitDebianIdentifiers(values.architectures);
+  const normalizedUpstream = upstreamUrl?.trim() || undefined;
+
+  return {
+    distributions,
+    suite: values.suite.trim() || undefined,
+    codename: values.codename.trim() || undefined,
+    description: values.releaseDescription.trim() || undefined,
+    components,
+    architectures,
+    signing_enabled: values.signingEnabled,
+    signing_key_id: values.signingKeyId.trim() || undefined,
+    upstream_base_url: isRemote ? normalizedUpstream : undefined,
+    sync: isRemote
+      ? {
+          base_url: normalizedUpstream,
+          distributions,
+          components,
+          architectures,
+          cache_policy: values.cachePolicy,
+          download_policy: values.downloadPolicy,
+          re_sign: values.reSign,
+        }
+      : undefined,
+  };
+}
+
+interface DebianConfigFieldsProps {
+  idPrefix: "create" | "edit";
+  values: DebianFormValues;
+  onChange: (values: DebianFormValues) => void;
+  isRemote: boolean;
+}
+
+function DebianConfigFields({
+  idPrefix,
+  values,
+  onChange,
+  isRemote,
+}: DebianConfigFieldsProps) {
+  const update = <K extends keyof DebianFormValues>(
+    key: K,
+    value: DebianFormValues[K],
+  ) => onChange({ ...values, [key]: value });
+
+  return (
+    <div className="space-y-4 rounded-md border p-4">
+      <div>
+        <h3 className="text-sm font-semibold">Debian/APT configuration</h3>
+        <p className="text-xs text-muted-foreground">
+          Configure Release metadata, package layout, and APT client filters.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-debian-distributions`}>Distributions</Label>
+        <Input
+          id={`${idPrefix}-debian-distributions`}
+          placeholder="bookworm, bookworm-updates"
+          value={values.distributions}
+          onChange={(event) => update("distributions", event.target.value)}
+          pattern={DEBIAN_IDENTIFIER_LIST_PATTERN}
+          required
+        />
+        <p className="text-xs text-muted-foreground">Comma-separated suites or codenames.</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-debian-suite`}>Suite</Label>
+          <Input
+            id={`${idPrefix}-debian-suite`}
+            placeholder="stable"
+            value={values.suite}
+            onChange={(event) => update("suite", event.target.value)}
+            pattern={DEBIAN_IDENTIFIER_PATTERN}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-debian-codename`}>Codename</Label>
+          <Input
+            id={`${idPrefix}-debian-codename`}
+            placeholder="bookworm"
+            value={values.codename}
+            onChange={(event) => update("codename", event.target.value)}
+            pattern={DEBIAN_IDENTIFIER_PATTERN}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-debian-components`}>Components</Label>
+          <Input
+            id={`${idPrefix}-debian-components`}
+            placeholder="main, contrib, non-free"
+            value={values.components}
+            onChange={(event) => update("components", event.target.value)}
+            pattern={DEBIAN_IDENTIFIER_LIST_PATTERN}
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-debian-architectures`}>Architectures</Label>
+          <Input
+            id={`${idPrefix}-debian-architectures`}
+            placeholder="amd64, arm64, all"
+            value={values.architectures}
+            onChange={(event) => update("architectures", event.target.value)}
+            pattern={DEBIAN_IDENTIFIER_LIST_PATTERN}
+            required
+          />
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-debian-release-description`}>
+          Release description
+        </Label>
+        <Input
+          id={`${idPrefix}-debian-release-description`}
+          placeholder="Internal Debian package repository"
+          value={values.releaseDescription}
+          onChange={(event) => update("releaseDescription", event.target.value)}
+        />
+      </div>
+
+      {isRemote && (
+        <div className="space-y-4 border-t pt-4">
+          <div>
+            <h4 className="text-sm font-medium">Remote cache and sync</h4>
+            <p className="text-xs text-muted-foreground">
+              Metadata cache behavior and when packages are mirrored from upstream.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-debian-cache-policy`}>Metadata access</Label>
+              <Select
+                value={values.cachePolicy}
+                onValueChange={(value) =>
+                  update("cachePolicy", value as DebianFormValues["cachePolicy"])
+                }
+              >
+                <SelectTrigger id={`${idPrefix}-debian-cache-policy`} className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="metadata_ttl">Use metadata cache</SelectItem>
+                  <SelectItem value="always_revalidate">Always revalidate upstream</SelectItem>
+                  <SelectItem value="no_cache">Direct metadata (no cache)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-debian-download-policy`}>Package download</Label>
+              <Select
+                value={values.downloadPolicy}
+                onValueChange={(value) =>
+                  update("downloadPolicy", value as DebianFormValues["downloadPolicy"])
+                }
+              >
+                <SelectTrigger id={`${idPrefix}-debian-download-policy`} className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="on_demand">On demand (pull-through cache)</SelectItem>
+                  <SelectItem value="immediate">Immediate mirror sync</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <Switch
+              id={`${idPrefix}-debian-resign`}
+              checked={values.reSign}
+              onCheckedChange={(checked) => update("reSign", checked)}
+            />
+            <div>
+              <Label htmlFor={`${idPrefix}-debian-resign`}>Re-sign mirrored metadata</Label>
+              <p className="text-xs text-muted-foreground">
+                Sign locally generated Release metadata after filtering upstream content.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 border-t pt-4">
+        <Switch
+          id={`${idPrefix}-debian-signing`}
+          checked={values.signingEnabled}
+          onCheckedChange={(checked) => update("signingEnabled", checked)}
+        />
+        <Label htmlFor={`${idPrefix}-debian-signing`}>Sign Release metadata</Label>
+      </div>
+      {values.signingEnabled && (
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-debian-signing-key`}>Signing key ID</Label>
+          <Input
+            id={`${idPrefix}-debian-signing-key`}
+            placeholder="Existing signing key UUID (optional)"
+            value={values.signingKeyId}
+            onChange={(event) => update("signingKeyId", event.target.value)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface RepoDialogsProps {
   createOpen: boolean;
   onCreateOpenChange: (open: boolean) => void;
@@ -64,7 +349,7 @@ interface RepoDialogsProps {
   editOpen: boolean;
   onEditOpenChange: (open: boolean) => void;
   editRepo: Repository | null;
-  onEditSubmit: (key: string, data: { key?: string; name: string; description: string; is_public: boolean; quota_bytes?: number }) => void;
+  onEditSubmit: (key: string, data: Partial<CreateRepositoryRequest>) => void;
   editPending: boolean;
   onUpstreamAuthUpdate?: (key: string, payload: { auth_type: string; username?: string; password?: string }) => void;
   upstreamAuthPending?: boolean;
@@ -128,6 +413,8 @@ export function RepoDialogs({
   const [upstreamAuthType, setUpstreamAuthType] = useState<string>("none");
   const [upstreamUsername, setUpstreamUsername] = useState("");
   const [upstreamPassword, setUpstreamPassword] = useState("");
+  const [createDebianForm, setCreateDebianForm] =
+    useState<DebianFormValues>(EMPTY_DEBIAN_FORM);
 
   /**
    * Suggest a default upstream URL when the repo type is "remote".
@@ -152,6 +439,10 @@ export function RepoDialogs({
   const [editAuthUsername, setEditAuthUsername] = useState("");
   const [editAuthPassword, setEditAuthPassword] = useState("");
   const [removeAuthConfirm, setRemoveAuthConfirm] = useState(false);
+  const [editDebianOverrides, setEditDebianOverrides] =
+    useState<Partial<DebianFormValues>>({});
+  const [editDebianUpstreamOverride, setEditDebianUpstreamOverride] =
+    useState<string>();
 
   // Focus management for the upstream-auth view <-> edit toggle (#412).
   // When the user switches modes the previously focused control unmounts, so
@@ -218,6 +509,16 @@ export function RepoDialogs({
     is_public?: boolean;
   }>({});
   const editForm = { ...editFormDefaults, ...editFormOverrides };
+  const editDebianDefaults = useMemo(
+    () => debianConfigToForm(editRepo?.debian_config),
+    [editRepo],
+  );
+  const editDebianForm = { ...editDebianDefaults, ...editDebianOverrides };
+  const editDebianUpstreamUrl =
+    editDebianUpstreamOverride ??
+    editRepo?.debian_config?.upstream_base_url ??
+    editRepo?.upstream_url ??
+    "";
   const editKeyChanged = editRepo ? editForm.key !== editRepo.key : false;
 
   const resetCreateForm = () => {
@@ -237,19 +538,21 @@ export function RepoDialogs({
     setUpstreamAuthType("none");
     setUpstreamUsername("");
     setUpstreamPassword("");
+    setCreateDebianForm(EMPTY_DEBIAN_FORM);
   };
 
-  // Reset the create form whenever the dialog opens. The parent flips
+  // Reset the create form whenever the dialog closes. The parent flips
   // `createOpen` back to false programmatically on a successful submit
   // (mutation onSuccess), but Radix Dialog does NOT fire onOpenChange for
   // programmatic close — so handleCreateClose's reset path is bypassed and
   // stale form values would otherwise persist into the next open.
   useEffect(() => {
-    if (createOpen) {
+    if (!createOpen) {
+      // Closing is also driven programmatically after successful mutations;
+      // reset all draft-only fields at that boundary.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       resetCreateForm();
     }
-    // resetCreateForm only sets local state via stable setters; safe to omit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createOpen]);
 
   // Build member_repos array from selected keys
@@ -271,7 +574,7 @@ export function RepoDialogs({
   return (
     <>
       <Dialog open={createOpen} onOpenChange={handleCreateClose}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Create Repository</DialogTitle>
             <DialogDescription>
@@ -287,6 +590,15 @@ export function RepoDialogs({
                 quota_bytes: quotaToBytes(createQuotaValue, createQuotaUnit) ?? undefined,
                 upstream_url: createForm.repo_type === "remote" ? createForm.upstream_url : undefined,
                 member_repos: createForm.repo_type === "virtual" ? buildMemberRepos() : undefined,
+                debian_config:
+                  createForm.format === "debian" &&
+                  (createForm.repo_type === "local" || createForm.repo_type === "remote")
+                    ? buildDebianConfig(
+                        createDebianForm,
+                        createForm.repo_type === "remote",
+                        createForm.upstream_url,
+                      )
+                    : undefined,
               };
               if (createForm.repo_type === "remote" && upstreamAuthType !== "none") {
                 submitData.upstream_auth_type = upstreamAuthType;
@@ -424,6 +736,16 @@ export function RepoDialogs({
                 </p>
               </div>
             )}
+
+            {createForm.format === "debian" &&
+              (createForm.repo_type === "local" || createForm.repo_type === "remote") && (
+                <DebianConfigFields
+                  idPrefix="create"
+                  values={createDebianForm}
+                  onChange={setCreateDebianForm}
+                  isRemote={createForm.repo_type === "remote"}
+                />
+              )}
 
             {/* Remote repository: upstream authentication */}
             {createForm.repo_type === "remote" && (
@@ -589,10 +911,12 @@ export function RepoDialogs({
           setEditAuthUsername("");
           setEditAuthPassword("");
           setRemoveAuthConfirm(false);
+          setEditDebianOverrides({});
+          setEditDebianUpstreamOverride(undefined);
         }
         onEditOpenChange(open);
       }}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Edit Repository: {editRepo?.key}</DialogTitle>
             <DialogDescription>
@@ -609,6 +933,20 @@ export function RepoDialogs({
                   ...rest,
                   ...(editKeyChanged ? { key: formKey } : {}),
                   quota_bytes: quotaToBytes(editQuotaValue, editQuotaUnit) ?? undefined,
+                  ...(editRepo.format === "debian" &&
+                  (editRepo.repo_type === "local" || editRepo.repo_type === "remote")
+                    ? {
+                        upstream_url:
+                          editRepo.repo_type === "remote"
+                            ? editDebianUpstreamUrl.trim()
+                            : undefined,
+                        debian_config: buildDebianConfig(
+                          editDebianForm,
+                          editRepo.repo_type === "remote",
+                          editDebianUpstreamUrl,
+                        ),
+                      }
+                    : {}),
                 });
               }
             }}
@@ -698,6 +1036,33 @@ export function RepoDialogs({
                 Maximum storage for this repository. Leave empty for no limit.
               </p>
             </div>
+
+            {editRepo?.format === "debian" &&
+              (editRepo.repo_type === "local" || editRepo.repo_type === "remote") && (
+                <>
+                  {editRepo.repo_type === "remote" && (
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-debian-upstream">Upstream URL</Label>
+                      <Input
+                        id="edit-debian-upstream"
+                        type="url"
+                        value={editDebianUpstreamUrl}
+                        onChange={(event) =>
+                          setEditDebianUpstreamOverride(event.target.value)
+                        }
+                        placeholder="https://deb.debian.org/debian"
+                        required
+                      />
+                    </div>
+                  )}
+                  <DebianConfigFields
+                    idPrefix="edit"
+                    values={editDebianForm}
+                    onChange={setEditDebianOverrides}
+                    isRemote={editRepo.repo_type === "remote"}
+                  />
+                </>
+              )}
 
             {/* Upstream authentication for remote repos (saved separately from main form) */}
             {editRepo?.repo_type === "remote" && (

@@ -65,10 +65,42 @@ export interface Repository {
   upstream_url?: string;
   upstream_auth_type?: string | null;
   upstream_auth_configured?: boolean;
+  // Debian/APT repository layout, signing, and remote sync configuration.
+  debian_config?: DebianRepositoryConfig;
   // For virtual repositories
   member_repos?: VirtualRepoMember[];
   created_at: string;
   updated_at: string;
+}
+
+export interface DebianRepositorySyncConfig {
+  base_url?: string;
+  distributions: string[];
+  components: string[];
+  architectures: string[];
+  cache_policy?: string;
+  download_policy?: string;
+  re_sign: boolean;
+}
+
+export interface DebianRepositoryConfig {
+  distributions: string[];
+  suite?: string;
+  codename?: string;
+  description?: string;
+  components: string[];
+  architectures: string[];
+  signing_enabled: boolean;
+  signing_key_id?: string;
+  upstream_base_url?: string;
+  sync?: DebianRepositorySyncConfig;
+  // Hydrated, read-only helpers returned by the backend.
+  apt_source_example?: string;
+  public_key_url?: string;
+  metadata_paths?: string[];
+  upload_endpoint?: string;
+  upload_path_template?: string;
+  upload_metadata_headers?: string[];
 }
 
 export type RepositoryFormat =
@@ -140,6 +172,8 @@ export interface CreateRepositoryRequest {
   upstream_auth_type?: string;
   upstream_username?: string;
   upstream_password?: string;
+  // Only valid when format is Debian/APT.
+  debian_config?: DebianRepositoryConfig;
   // For virtual repositories - array of member repo keys with priorities
   member_repos?: VirtualRepoMemberInput[];
 }
