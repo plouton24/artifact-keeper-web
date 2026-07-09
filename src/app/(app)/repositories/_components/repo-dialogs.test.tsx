@@ -185,6 +185,53 @@ describe('RepoDialogs - Debian/APT configuration', () => {
     expect(payload.debian).toBeUndefined();
     expect(payload.debian_config).toBeUndefined();
   });
+
+  it('warns that passthrough ignores component/architecture filters', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+    fireEvent.change(screen.getByLabelText('Components'), {
+      target: { value: 'main' },
+    });
+
+    expect(
+      screen.getByText(/filters are ignored while metadata strategy is upstream passthrough/i),
+    ).toBeTruthy();
+  });
+
+  it('auto-enables verify upstream when selecting filter, generate, and sign', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[2], { target: { value: 'filter_generate_and_sign' } });
+
+    expect(
+      (screen.getByLabelText('Verify upstream metadata') as HTMLButtonElement)
+        .getAttribute('data-state') === 'checked' ||
+        (screen.getByLabelText('Verify upstream metadata') as HTMLInputElement)
+          .checked,
+    ).toBe(true);
+    expect(screen.getByLabelText('Upstream GPG key')).toBeTruthy();
+    expect(screen.getByLabelText('Signing key')).toBeTruthy();
+    expect(
+      screen.getByText(/requires an upstream GPG key ID/i),
+    ).toBeTruthy();
+  });
 });
 
 describe('RepoDialogs - Staging Hint', () => {

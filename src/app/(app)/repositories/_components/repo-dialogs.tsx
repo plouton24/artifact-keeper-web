@@ -161,6 +161,29 @@ function debianWarnings(values: DebianFormValues): string[] {
       "Prefetch is enabled with broad component or architecture selection. Artifact Keeper may download a large number of packages and consume significant storage. Consider using cache_on_request or narrowing the filters.",
     );
   }
+  if (
+    values.metadataStrategy === "upstream_passthrough" &&
+    (!componentsAll || !architecturesAll)
+  ) {
+    warnings.push(
+      "Component and architecture filters are ignored while metadata strategy is upstream passthrough. Artifact Keeper serves upstream Release metadata unchanged. Switch to filter and generate (or filter, generate, and sign) for filters to take effect.",
+    );
+  }
+  if (values.metadataStrategy === "filter_generate_and_sign" && !values.verifyUpstreamMetadata) {
+    warnings.push(
+      "Filter, generate, and sign requires verify upstream metadata so Artifact Keeper only re-signs metadata from a verified upstream.",
+    );
+  }
+  if (values.metadataStrategy === "filter_generate_and_sign" && !values.signingKeyId.trim()) {
+    warnings.push(
+      "Filter, generate, and sign requires a signing key ID (a key with private material from Signing Keys).",
+    );
+  }
+  if (values.verifyUpstreamMetadata && !values.upstreamGpgKeyId.trim()) {
+    warnings.push(
+      "Verify upstream metadata requires an upstream GPG key ID. Import the Debian/Ubuntu archive public key on the Signing Keys page, then enter its name, fingerprint, or key ID here.",
+    );
+  }
 
   return warnings;
 }
@@ -264,9 +287,18 @@ function DebianConfigFields({
                   <Label htmlFor={`${idPrefix}-debian-metadata-strategy`}>Metadata strategy</Label>
                   <Select
                     value={values.metadataStrategy}
-                    onValueChange={(value) =>
-                      update("metadataStrategy", value as DebianMetadataStrategy)
-                    }
+                    onValueChange={(value) => {
+                      const strategy = value as DebianMetadataStrategy;
+                      if (strategy === "filter_generate_and_sign") {
+                        onChange({
+                          ...values,
+                          metadataStrategy: strategy,
+                          verifyUpstreamMetadata: true,
+                        });
+                      } else {
+                        update("metadataStrategy", strategy);
+                      }
+                    }}
                   >
                     <SelectTrigger id={`${idPrefix}-debian-metadata-strategy`} className="w-full">
                       <SelectValue />
@@ -347,10 +379,15 @@ function DebianConfigFields({
                   <Label htmlFor={`${idPrefix}-debian-upstream-gpg-key`}>Upstream GPG key</Label>
                   <Input
                     id={`${idPrefix}-debian-upstream-gpg-key`}
+                    placeholder="ubuntu-archive-key or fingerprint"
                     value={values.upstreamGpgKeyId}
                     onChange={(event) => update("upstreamGpgKeyId", event.target.value)}
                     required
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Name, fingerprint, or key ID of a stored public trust anchor.
+                    Import the archive public key from Signing Keys → Import public key.
+                  </p>
                 </div>
               )}
 
@@ -359,10 +396,15 @@ function DebianConfigFields({
                   <Label htmlFor={`${idPrefix}-debian-signing-key`}>Signing key</Label>
                   <Input
                     id={`${idPrefix}-debian-signing-key`}
+                    placeholder="signing key UUID"
                     value={values.signingKeyId}
                     onChange={(event) => update("signingKeyId", event.target.value)}
                     required
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Must be a key with private material (can_sign). Public-only trust
+                    anchors can verify upstream but cannot re-sign metadata.
+                  </p>
                 </div>
               )}
             </div>
