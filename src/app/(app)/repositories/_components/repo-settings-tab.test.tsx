@@ -40,12 +40,14 @@ const mockUpdate = vi.fn();
 const mockUpdateAgePolicy = vi.fn();
 const mockGetCacheTtl = vi.fn();
 const mockSetCacheTtl = vi.fn();
+const mockSyncDebian = vi.fn();
 vi.mock("@/lib/api/repositories", () => ({
   repositoriesApi: {
     update: (...args: unknown[]) => mockUpdate(...args),
     updateAgePolicy: (...args: unknown[]) => mockUpdateAgePolicy(...args),
     getCacheTtl: (...args: unknown[]) => mockGetCacheTtl(...args),
     setCacheTtl: (...args: unknown[]) => mockSetCacheTtl(...args),
+    syncDebian: (...args: unknown[]) => mockSyncDebian(...args),
   },
 }));
 
@@ -218,6 +220,27 @@ const baseRepo: Repository = {
   quota_bytes: 10737418240, // 10 GB
   created_at: "2024-01-15T10:00:00Z",
   updated_at: "2024-06-20T14:30:00Z",
+};
+
+const debianRepo: Repository = {
+  ...baseRepo,
+  id: "repo-deb",
+  key: "ubuntu-focal-security",
+  name: "Ubuntu Focal Security",
+  format: "debian",
+  repo_type: "remote",
+  upstream_url: "https://mirror.pilotfiber.com/ubuntu/",
+  debian: {
+    distribution_paths: ["focal-security"],
+    components: ["main", "restricted"],
+    architectures: ["amd64"],
+    metadata_strategy: "filter_and_generate",
+    package_fetch_strategy: "cache_on_request",
+    include_source_packages: false,
+    ignore_missing_indexes: true,
+    apt_source_example:
+      "deb <repo-url>/debian/ubuntu-focal-security focal-security main",
+  },
 };
 
 // Default admin-settings return: upload limit available. Individual tests can
@@ -450,6 +473,79 @@ describe("RepoSettingsTab - General Section", () => {
       screen.getByText(
         /public repositories allow unauthenticated read access/i
       )
+    ).toBeTruthy();
+  });
+});
+
+describe("RepoSettingsTab - Debian/APT Section", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListPolicies.mockResolvedValue([]);
+    mockGetCacheTtl.mockResolvedValue({
+      repository_key: "ubuntu-focal-security",
+      cache_ttl_seconds: 86400,
+    });
+  });
+
+  it("renders saved Debian advanced configuration", async () => {
+    render(<RepoSettingsTab repository={debianRepo} />, {
+      wrapper: createWrapper(),
+    });
+
+    expect(screen.getByRole("heading", { name: "Debian / APT" })).toBeTruthy();
+    expect(screen.getByText("focal-security")).toBeTruthy();
+    expect(screen.getByText("main, restricted")).toBeTruthy();
+    expect(screen.getByText("amd64")).toBeTruthy();
+    expect(screen.getByText("Filter and generate")).toBeTruthy();
+    expect(screen.getByText("Cache on request")).toBeTruthy();
+    expect(
+      screen.getAllByText("https://mirror.pilotfiber.com/ubuntu/").length
+    ).toBeGreaterThan(0);
+  });
+
+  it("runs Debian sync from settings", async () => {
+    mockSyncDebian.mockResolvedValue({
+      repository: "ubuntu-focal-security",
+      prefetched_packages: 2,
+      prefetched_sources: 0,
+      plans: [
+        {
+          distribution: "focal-security",
+          package_files: [{}, {}, {}],
+          source_files: [],
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<RepoSettingsTab repository={debianRepo} />, {
+      wrapper: createWrapper(),
+    });
+
+    await user.click(screen.getByRole("button", { name: /sync now/i }));
+
+    await waitFor(() => {
+      expect(mockSyncDebian).toHaveBeenCalledWith("ubuntu-focal-security");
+    });
+    expect(
+      await screen.findByText(/last sync indexed 3 package file/i)
+    ).toBeTruthy();
+  });
+
+  it("explains when no advanced Debian configuration is saved", () => {
+    render(
+      <RepoSettingsTab
+        repository={{
+          ...debianRepo,
+          debian: undefined,
+          debian_config: undefined,
+        }}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(
+      screen.getByText(/no advanced debian\/apt configuration is saved/i)
     ).toBeTruthy();
   });
 });

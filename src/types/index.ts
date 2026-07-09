@@ -65,7 +65,9 @@ export interface Repository {
   upstream_url?: string;
   upstream_auth_type?: string | null;
   upstream_auth_configured?: boolean;
-  // Debian/APT repository layout, signing, and remote sync configuration.
+  // Debian/APT repository filtering and metadata configuration.
+  debian?: DebianRepositoryConfig;
+  // Legacy API field accepted while older backends/generated SDKs are still in use.
   debian_config?: DebianRepositoryConfig;
   // For virtual repositories
   member_repos?: VirtualRepoMember[];
@@ -73,34 +75,55 @@ export interface Repository {
   updated_at: string;
 }
 
-export interface DebianRepositorySyncConfig {
-  base_url?: string;
-  distributions: string[];
-  components: string[];
-  architectures: string[];
-  cache_policy?: string;
-  download_policy?: string;
-  re_sign: boolean;
-}
+export type DebianMetadataStrategy =
+  | 'upstream_passthrough'
+  | 'filter_and_generate'
+  | 'filter_generate_and_sign'
+  | 'hosted_generate';
+
+export type DebianPackageFetchStrategy =
+  | 'cache_on_request'
+  | 'prefetch_selected'
+  | 'passthrough';
 
 export interface DebianRepositoryConfig {
-  distributions: string[];
-  suite?: string;
-  codename?: string;
-  description?: string;
-  components: string[];
-  architectures: string[];
-  signing_enabled: boolean;
-  signing_key_id?: string;
-  upstream_base_url?: string;
-  sync?: DebianRepositorySyncConfig;
+  distribution_paths: string[];
+  components?: string[];
+  architectures?: string[];
+  include_source_packages?: boolean;
+  flat_repository?: boolean;
+  verify_upstream_metadata?: boolean;
+  upstream_gpg_key_id?: string | null;
+  metadata_strategy?: DebianMetadataStrategy;
+  package_fetch_strategy?: DebianPackageFetchStrategy;
+  ignore_missing_indexes?: boolean;
+  signing_key_id?: string | null;
   // Hydrated, read-only helpers returned by the backend.
+  warnings?: string[];
   apt_source_example?: string;
   public_key_url?: string;
   metadata_paths?: string[];
   upload_endpoint?: string;
   upload_path_template?: string;
   upload_metadata_headers?: string[];
+}
+
+export interface DebianSyncPlanSummary {
+  distribution: string;
+  release_paths?: string[];
+  package_indexes?: unknown[];
+  source_indexes?: unknown[];
+  package_files?: unknown[];
+  source_files?: unknown[];
+  missing_package_indexes?: string[];
+  missing_source_indexes?: string[];
+}
+
+export interface DebianSyncResponse {
+  repository: string;
+  plans: DebianSyncPlanSummary[];
+  prefetched_packages: number;
+  prefetched_sources: number;
 }
 
 export type RepositoryFormat =
@@ -173,6 +196,8 @@ export interface CreateRepositoryRequest {
   upstream_username?: string;
   upstream_password?: string;
   // Only valid when format is Debian/APT.
+  debian?: DebianRepositoryConfig;
+  // Legacy request alias retained for callers not yet migrated.
   debian_config?: DebianRepositoryConfig;
   // For virtual repositories - array of member repo keys with priorities
   member_repos?: VirtualRepoMemberInput[];

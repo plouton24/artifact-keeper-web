@@ -525,35 +525,40 @@ describe("repositoriesApi Debian configuration", () => {
   beforeEach(() => vi.clearAllMocks());
 
   const debianConfig = {
-    distributions: ["bookworm"],
+    distribution_paths: ["bookworm"],
     components: ["main"],
-    architectures: ["amd64", "all"],
-    signing_enabled: false,
-    upstream_base_url: "https://deb.debian.org/debian",
-    sync: {
-      base_url: "https://deb.debian.org/debian",
-      distributions: ["bookworm"],
-      components: ["main"],
-      architectures: ["amd64", "all"],
-      cache_policy: "always_revalidate",
-      download_policy: "on_demand",
-      re_sign: false,
-    },
+    architectures: ["amd64"],
+    metadata_strategy: "upstream_passthrough" as const,
+    package_fetch_strategy: "cache_on_request" as const,
+    include_source_packages: false,
+    flat_repository: false,
+    verify_upstream_metadata: false,
+    ignore_missing_indexes: false,
   };
 
   it("preserves backend Debian configuration in adapted responses", async () => {
+    mockGetRepository.mockResolvedValue({
+      data: sdkRepo({ format: "debian", debian: debianConfig }),
+      error: undefined,
+    });
+
+    const result = await repositoriesApi.get("debian-proxy");
+    expect(result.debian).toEqual(debianConfig);
+  });
+
+  it("accepts the legacy debian_config response field", async () => {
     mockGetRepository.mockResolvedValue({
       data: sdkRepo({ format: "debian", debian_config: debianConfig }),
       error: undefined,
     });
 
     const result = await repositoriesApi.get("debian-proxy");
-    expect(result.debian_config).toEqual(debianConfig);
+    expect(result.debian).toEqual(debianConfig);
   });
 
   it("forwards Debian configuration when creating a repository", async () => {
     mockCreateRepository.mockResolvedValue({
-      data: sdkRepo({ format: "debian", debian_config: debianConfig }),
+      data: sdkRepo({ format: "debian", debian: debianConfig }),
       error: undefined,
     });
 
@@ -563,35 +568,53 @@ describe("repositoriesApi Debian configuration", () => {
       format: "debian",
       repo_type: "remote",
       upstream_url: "https://deb.debian.org/debian",
-      debian_config: debianConfig,
+      debian: debianConfig,
     });
 
     expect(mockCreateRepository).toHaveBeenCalledWith({
-      body: expect.objectContaining({ debian_config: debianConfig }),
+      body: expect.objectContaining({ debian: debianConfig }),
+    });
+  });
+
+  it("does not send Debian configuration when omitted", async () => {
+    mockCreateRepository.mockResolvedValue({
+      data: sdkRepo({ format: "debian" }),
+      error: undefined,
+    });
+
+    await repositoriesApi.create({
+      key: "debian-proxy",
+      name: "Debian Proxy",
+      format: "debian",
+      repo_type: "remote",
+      upstream_url: "https://deb.debian.org/debian",
+    });
+
+    expect(mockCreateRepository).toHaveBeenCalledWith({
+      body: expect.not.objectContaining({ debian: expect.anything() }),
     });
   });
 
   it("forwards Debian configuration and upstream URL on update", async () => {
     mockUpdateRepository.mockResolvedValue({
-      data: sdkRepo({ format: "debian", debian_config: debianConfig }),
+      data: sdkRepo({ format: "debian", debian: debianConfig }),
       error: undefined,
     });
 
     await repositoriesApi.update("debian-proxy", {
       upstream_url: "https://deb.debian.org/debian",
-      debian_config: debianConfig,
+      debian: debianConfig,
     });
 
     expect(mockUpdateRepository).toHaveBeenCalledWith({
       path: { key: "debian-proxy" },
       body: expect.objectContaining({
         upstream_url: "https://deb.debian.org/debian",
-        debian_config: debianConfig,
+        debian: debianConfig,
       }),
     });
   });
 });
-
 // ---------------------------------------------------------------------------
 // Virtual member management
 // ---------------------------------------------------------------------------
@@ -788,5 +811,29 @@ describe("repositoriesApi.updateAgePolicy", () => {
     await expect(
       repositoriesApi.updateAgePolicy("npm-proxy", { enabled: true, duration_minutes: 10 })
     ).rejects.toThrow("age policy boom");
+  });
+});
+
+describe("repositoriesApi.syncDebian", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("sends POST to the Debian sync endpoint", async () => {
+    mockApiFetch.mockResolvedValue({
+      repository: "ubuntu-focal-security",
+      plans: [],
+      prefetched_packages: 0,
+      prefetched_sources: 0,
+    });
+
+    const result = await repositoriesApi.syncDebian("ubuntu/focal security");
+
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/debian/ubuntu%2Ffocal%20security/sync",
+      {
+        method: "POST",
+        body: "{}",
+      }
+    );
+    expect(result.repository).toBe("ubuntu-focal-security");
   });
 });

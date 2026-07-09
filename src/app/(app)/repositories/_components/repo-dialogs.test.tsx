@@ -94,23 +94,24 @@ describe('RepoDialogs - Debian/APT configuration', () => {
     vi.clearAllMocks();
   });
 
-  it('shows Debian layout fields only after Debian/APT is selected', async () => {
+  it('shows Debian settings as an opt-in section', async () => {
     const user = userEvent.setup();
     render(<RepoDialogs {...defaultProps} />);
 
-    expect(screen.queryByText('Debian/APT configuration')).toBeNull();
+    expect(screen.queryByText('APT filtering and metadata settings')).toBeNull();
     const dialog = screen.getByRole('dialog');
     const selects = within(dialog).getAllByTestId('mock-select');
     await user.selectOptions(selects[0], 'debian');
 
-    expect(screen.getByText('Debian/APT configuration')).toBeTruthy();
-    expect(screen.getByLabelText('Distributions')).toBeTruthy();
-    expect(screen.getByLabelText('Components')).toBeTruthy();
-    expect(screen.getByLabelText('Architectures')).toBeTruthy();
-    expect(screen.queryByText('Remote cache and sync')).toBeNull();
+    expect(screen.getByText('APT filtering and metadata settings')).toBeTruthy();
+    expect(screen.queryByLabelText('Distribution paths')).toBeNull();
+
+    await user.click(screen.getByLabelText('Enable'));
+    expect(screen.getByLabelText('Distribution paths')).toBeTruthy();
+    expect(screen.getByText('Advanced Debian/APT settings')).toBeTruthy();
   });
 
-  it('submits remote Debian cache and sync settings to the backend payload', () => {
+  it('submits remote Debian filtering and metadata settings to the backend payload', () => {
     const onCreateSubmit = vi.fn();
     render(<RepoDialogs {...defaultProps} onCreateSubmit={onCreateSubmit} />);
 
@@ -122,20 +123,21 @@ describe('RepoDialogs - Debian/APT configuration', () => {
 
     fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'debian-proxy' } });
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Debian Proxy' } });
-    fireEvent.change(screen.getByLabelText('Distributions'), {
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.change(screen.getByLabelText('Distribution paths'), {
       target: { value: 'bookworm, bookworm-updates' },
     });
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
     fireEvent.change(screen.getByLabelText('Components'), {
       target: { value: 'main, contrib' },
     });
     fireEvent.change(screen.getByLabelText('Architectures'), {
-      target: { value: 'amd64, arm64, all' },
+      target: { value: 'amd64, arm64' },
     });
 
     selects = within(dialog).getAllByTestId('mock-select');
-    fireEvent.change(selects[2], { target: { value: 'no_cache' } });
-    fireEvent.change(selects[3], { target: { value: 'immediate' } });
-    fireEvent.click(screen.getByLabelText('Re-sign mirrored metadata'));
+    fireEvent.change(selects[2], { target: { value: 'filter_and_generate' } });
+    fireEvent.change(selects[3], { target: { value: 'prefetch_selected' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
 
     expect(onCreateSubmit).toHaveBeenCalledWith(
@@ -143,23 +145,45 @@ describe('RepoDialogs - Debian/APT configuration', () => {
         format: 'debian',
         repo_type: 'remote',
         upstream_url: 'https://deb.debian.org/debian',
-        debian_config: expect.objectContaining({
-          distributions: ['bookworm', 'bookworm-updates'],
+        debian: expect.objectContaining({
+          distribution_paths: ['bookworm', 'bookworm-updates'],
           components: ['main', 'contrib'],
-          architectures: ['amd64', 'arm64', 'all'],
-          upstream_base_url: 'https://deb.debian.org/debian',
-          sync: {
-            base_url: 'https://deb.debian.org/debian',
-            distributions: ['bookworm', 'bookworm-updates'],
-            components: ['main', 'contrib'],
-            architectures: ['amd64', 'arm64', 'all'],
-            cache_policy: 'no_cache',
-            download_policy: 'immediate',
-            re_sign: true,
-          },
+          architectures: ['amd64', 'arm64'],
+          metadata_strategy: 'filter_and_generate',
+          package_fetch_strategy: 'prefetch_selected',
+          include_source_packages: false,
+          flat_repository: false,
+          verify_upstream_metadata: false,
+          ignore_missing_indexes: false,
         }),
       }),
     );
+  });
+
+  it('does not add Debian config when the optional section stays disabled', () => {
+    const onCreateSubmit = vi.fn();
+    render(<RepoDialogs {...defaultProps} onCreateSubmit={onCreateSubmit} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'debian-proxy' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Debian Proxy' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    const payload = onCreateSubmit.mock.calls[0][0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        format: 'debian',
+        repo_type: 'remote',
+        upstream_url: 'https://deb.debian.org/debian',
+      }),
+    );
+    expect(payload.debian).toBeUndefined();
+    expect(payload.debian_config).toBeUndefined();
   });
 });
 

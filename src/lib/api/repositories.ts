@@ -31,6 +31,7 @@ import type {
   RepositoryFormat,
   RepositoryType,
   DebianRepositoryConfig,
+  DebianSyncResponse,
 } from '@/types';
 
 export interface ListRepositoriesParams {
@@ -147,6 +148,7 @@ function adaptRepository(sdk: RepositoryResponse): Repository {
   // The backend already exposes Debian config, but the published generated SDK
   // has not picked up the new OpenAPI field yet. Preserve it during adaptation.
   const extended = sdk as RepositoryResponse & {
+    debian?: DebianRepositoryConfig;
     debian_config?: DebianRepositoryConfig;
   };
   return {
@@ -171,7 +173,7 @@ function adaptRepository(sdk: RepositoryResponse): Repository {
     upstream_url: sdk.upstream_url ?? undefined,
     upstream_auth_type: sdk.upstream_auth_type ?? undefined,
     upstream_auth_configured: sdk.upstream_auth_configured,
-    debian_config: extended.debian_config,
+    debian: extended.debian ?? extended.debian_config,
     created_at: sdk.created_at,
     updated_at: sdk.updated_at,
   };
@@ -213,8 +215,9 @@ export const repositoriesApi = {
   },
 
   create: async (input: CreateRepositoryRequest): Promise<Repository> => {
+    const debian = input.debian ?? input.debian_config;
     const body: SdkCreateRepositoryRequest & {
-      debian_config?: DebianRepositoryConfig;
+      debian?: DebianRepositoryConfig;
     } = {
       key: input.key,
       name: input.name,
@@ -234,7 +237,7 @@ export const repositoriesApi = {
       upstream_auth_type: input.upstream_auth_type,
       upstream_username: input.upstream_username,
       upstream_password: input.upstream_password,
-      debian_config: input.debian_config,
+      ...(debian !== undefined ? { debian } : {}),
     };
     const { data, error } = await createRepository({ body });
     if (error) throw error;
@@ -242,9 +245,10 @@ export const repositoriesApi = {
   },
 
   update: async (key: string, input: Partial<CreateRepositoryRequest>): Promise<Repository> => {
+    const debian = input.debian ?? input.debian_config;
     const body: SdkUpdateRepositoryRequest & {
       upstream_url?: string;
-      debian_config?: DebianRepositoryConfig;
+      debian?: DebianRepositoryConfig;
     } = {
       name: input.name,
       description: input.description,
@@ -252,7 +256,7 @@ export const repositoriesApi = {
       quota_bytes: input.quota_bytes,
       key: input.key,
       ...(input.upstream_url !== undefined ? { upstream_url: input.upstream_url } : {}),
-      ...(input.debian_config !== undefined ? { debian_config: input.debian_config } : {}),
+      ...(debian !== undefined ? { debian } : {}),
     };
     const { data, error } = await updateRepository({ path: { key }, body });
     if (error) throw error;
@@ -305,6 +309,13 @@ export const repositoriesApi = {
   testUpstream: async (repoKey: string): Promise<{ success: boolean; message?: string }> => {
     return apiFetch(`/api/v1/repositories/${encodeURIComponent(repoKey)}/test-upstream`, {
       method: 'POST',
+    });
+  },
+
+  syncDebian: async (repoKey: string): Promise<DebianSyncResponse> => {
+    return apiFetch<DebianSyncResponse>(`/debian/${encodeURIComponent(repoKey)}/sync`, {
+      method: 'POST',
+      body: '{}',
     });
   },
 
