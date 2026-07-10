@@ -97,6 +97,10 @@ export interface DebianRepositoryConfig {
   metadata_strategy?: DebianMetadataStrategy;
   package_fetch_strategy?: DebianPackageFetchStrategy;
   ignore_missing_indexes?: boolean;
+  /** Package name queries (exact or trailing `*` glob). Empty = all packages. */
+  package_queries?: string[];
+  /** When package_queries is set, include Depends/Pre-Depends closure during sync. */
+  resolve_dependencies?: boolean;
   signing_key_id?: string | null;
   // Hydrated, read-only helpers returned by the backend.
   warnings?: string[];

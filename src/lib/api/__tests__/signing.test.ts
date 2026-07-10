@@ -132,6 +132,37 @@ describe("signingApi", () => {
     expect(out.name).toBe("release");
   });
 
+  it("registerExternalKey posts to /keys/external and adapts the key", async () => {
+    apiFetch.mockResolvedValue({
+      ...SDK_KEY,
+      can_sign: true,
+      algorithm: "external",
+      external_key_ref: "pkcs11:object=release",
+      signing_provider: "hsm",
+    });
+    const out = await signingApi.registerExternalKey({
+      name: "hsm-release",
+      public_key_pem: "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+      external_key_ref: "pkcs11:object=release",
+      signing_provider: "hsm",
+    });
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/api/v1/signing/keys/external",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "hsm-release",
+          public_key_pem: "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+          external_key_ref: "pkcs11:object=release",
+          signing_provider: "hsm",
+        }),
+      }),
+    );
+    expect(out.can_sign).toBe(true);
+    expect(out.external_key_ref).toBe("pkcs11:object=release");
+    expect(out.signing_provider).toBe("hsm");
+  });
+
   it("getRepoConfig adapts the config incl. resolved key", async () => {
     m.getRepoSigningConfig.mockResolvedValue({
       data: {

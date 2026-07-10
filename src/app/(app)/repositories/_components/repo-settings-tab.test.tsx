@@ -238,6 +238,8 @@ const debianRepo: Repository = {
     package_fetch_strategy: "cache_on_request",
     include_source_packages: false,
     ignore_missing_indexes: true,
+    package_queries: ["nginx", "curl*"],
+    resolve_dependencies: true,
     apt_source_example:
       "deb <repo-url>/debian/ubuntu-focal-security focal-security main",
   },
@@ -498,6 +500,8 @@ describe("RepoSettingsTab - Debian/APT Section", () => {
     expect(screen.getByText("amd64")).toBeTruthy();
     expect(screen.getByText("Filter and generate")).toBeTruthy();
     expect(screen.getByText("Cache on request")).toBeTruthy();
+    expect(screen.getByText("nginx, curl*")).toBeTruthy();
+    expect(screen.getByText("Resolve dependencies")).toBeTruthy();
     expect(
       screen.getAllByText("https://mirror.pilotfiber.com/ubuntu/").length
     ).toBeGreaterThan(0);

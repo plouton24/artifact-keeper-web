@@ -30,6 +30,9 @@ export interface SigningKey {
   public_key_pem: string;
   /** False for public-only trust anchors (upstream verification only). */
   can_sign: boolean;
+  /** Present when signing is delegated to an HSM/KMS/external provider. */
+  external_key_ref?: string | null;
+  signing_provider?: string;
   is_active: boolean;
   uid_name: string | null;
   uid_email: string | null;
@@ -71,6 +74,21 @@ export interface ImportPublicKeyRequest {
   expires_at?: string;
 }
 
+/** Register an external/HSM signing key (public key + external reference). */
+export interface ImportExternalKeyRequest {
+  name: string;
+  /** ASCII-armored OpenPGP public key corresponding to the external private key. */
+  public_key_pem: string;
+  /** HSM key URI / PKCS#11 label / KMS ARN. */
+  external_key_ref: string;
+  signing_provider?: string;
+  key_type?: string;
+  algorithm?: string;
+  uid_name?: string;
+  uid_email?: string;
+  repository_id?: string;
+}
+
 export interface UpdateSigningConfigRequest {
   require_signatures?: boolean;
   sign_metadata?: boolean;
@@ -79,6 +97,11 @@ export interface UpdateSigningConfigRequest {
 }
 
 function adaptKey(sdk: SigningKeyPublic): SigningKey {
+  const extended = sdk as SigningKeyPublic & {
+    can_sign?: boolean;
+    external_key_ref?: string | null;
+    signing_provider?: string;
+  };
   return {
     id: sdk.id,
     name: sdk.name,
@@ -88,7 +111,9 @@ function adaptKey(sdk: SigningKeyPublic): SigningKey {
     key_id: sdk.key_id ?? null,
     public_key_pem: sdk.public_key_pem,
     // Older SDKs omit can_sign; treat missing as true for generated keypairs.
-    can_sign: (sdk as SigningKeyPublic & { can_sign?: boolean }).can_sign ?? true,
+    can_sign: extended.can_sign ?? true,
+    external_key_ref: extended.external_key_ref ?? null,
+    signing_provider: extended.signing_provider ?? "local",
     is_active: sdk.is_active,
     uid_name: sdk.uid_name ?? null,
     uid_email: sdk.uid_email ?? null,
@@ -155,6 +180,18 @@ const signingApi = {
       body: JSON.stringify(req),
     });
     return adaptKey(assertData(data, 'signingApi.importPublicKey'));
+  },
+
+  /**
+   * Register an external/HSM signing key (public key + external_key_ref).
+   * Uses apiFetch until the generated SDK includes this endpoint.
+   */
+  registerExternalKey: async (req: ImportExternalKeyRequest): Promise<SigningKey> => {
+    const data = await apiFetch<SigningKeyPublic>('/api/v1/signing/keys/external', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+    return adaptKey(assertData(data, 'signingApi.registerExternalKey'));
   },
 
   deleteKey: async (keyId: string): Promise<void> => {

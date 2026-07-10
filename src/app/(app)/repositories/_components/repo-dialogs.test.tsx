@@ -134,6 +134,10 @@ describe('RepoDialogs - Debian/APT configuration', () => {
     fireEvent.change(screen.getByLabelText('Architectures'), {
       target: { value: 'amd64, arm64' },
     });
+    fireEvent.change(screen.getByLabelText('Package queries'), {
+      target: { value: 'nginx, curl*' },
+    });
+    fireEvent.click(screen.getByLabelText('Resolve dependencies for package queries'));
 
     selects = within(dialog).getAllByTestId('mock-select');
     fireEvent.change(selects[2], { target: { value: 'filter_and_generate' } });
@@ -155,6 +159,8 @@ describe('RepoDialogs - Debian/APT configuration', () => {
           flat_repository: false,
           verify_upstream_metadata: false,
           ignore_missing_indexes: false,
+          package_queries: ['nginx', 'curl*'],
+          resolve_dependencies: true,
         }),
       }),
     );

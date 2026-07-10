@@ -18,6 +18,7 @@ import signingApi, {
   type SigningKey,
   type CreateSigningKeyRequest,
   type ImportPublicKeyRequest,
+  type ImportExternalKeyRequest,
 } from "@/lib/api/signing";
 import { mutationErrorToast, toUserMessage } from "@/lib/error-utils";
 import { useAuth } from "@/providers/auth-provider";
@@ -58,10 +59,17 @@ export default function SigningPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [externalOpen, setExternalOpen] = useState(false);
   const [form, setForm] = useState<CreateSigningKeyRequest>(emptyForm);
   const [importForm, setImportForm] = useState<ImportPublicKeyRequest>({
     name: "",
     public_key: "",
+  });
+  const [externalForm, setExternalForm] = useState<ImportExternalKeyRequest>({
+    name: "",
+    public_key_pem: "",
+    external_key_ref: "",
+    signing_provider: "hsm",
   });
   const [viewKey, setViewKey] = useState<SigningKey | null>(null);
   const [rotateTarget, setRotateTarget] = useState<SigningKey | null>(null);
@@ -96,6 +104,22 @@ export default function SigningPage() {
       toast.success(`Trust anchor "${key.name}" imported`);
     },
     onError: mutationErrorToast("Failed to import public key"),
+  });
+
+  const externalMutation = useMutation({
+    mutationFn: (req: ImportExternalKeyRequest) => signingApi.registerExternalKey(req),
+    onSuccess: (key) => {
+      invalidate();
+      setExternalOpen(false);
+      setExternalForm({
+        name: "",
+        public_key_pem: "",
+        external_key_ref: "",
+        signing_provider: "hsm",
+      });
+      toast.success(`External key "${key.name}" registered`);
+    },
+    onError: mutationErrorToast("Failed to register external key"),
   });
 
   const rotateMutation = useMutation({
@@ -142,6 +166,11 @@ export default function SigningPage() {
     importForm.name.trim() !== "" &&
     importForm.public_key.trim() !== "" &&
     !importMutation.isPending;
+  const canRegisterExternal =
+    externalForm.name.trim() !== "" &&
+    externalForm.public_key_pem.trim() !== "" &&
+    externalForm.external_key_ref.trim() !== "" &&
+    !externalMutation.isPending;
 
   function submitCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -165,6 +194,22 @@ export default function SigningPage() {
     importMutation.mutate(req);
   }
 
+  function submitExternal(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canRegisterExternal) return;
+    const req: ImportExternalKeyRequest = {
+      name: externalForm.name.trim(),
+      public_key_pem: externalForm.public_key_pem.trim(),
+      external_key_ref: externalForm.external_key_ref.trim(),
+    };
+    if (externalForm.signing_provider?.trim()) {
+      req.signing_provider = externalForm.signing_provider.trim();
+    }
+    if (externalForm.uid_name?.trim()) req.uid_name = externalForm.uid_name.trim();
+    if (externalForm.uid_email?.trim()) req.uid_email = externalForm.uid_email.trim();
+    externalMutation.mutate(req);
+  }
+
   return (
     <div className="space-y-6 p-6">
       <div className="flex items-center justify-between">
@@ -178,6 +223,9 @@ export default function SigningPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setExternalOpen(true)}>
+            Register external/HSM key
+          </Button>
           <Button variant="outline" onClick={() => setImportOpen(true)}>
             Import public key
           </Button>
@@ -230,6 +278,9 @@ export default function SigningPage() {
                   ) : (
                     <Badge variant="outline">trust anchor</Badge>
                   )}
+                  {key.external_key_ref ? (
+                    <Badge variant="outline">{key.signing_provider ?? "external"}</Badge>
+                  ) : null}
                   {key.is_active ? (
                     <Badge variant="secondary">active</Badge>
                   ) : (
@@ -302,6 +353,75 @@ export default function SigningPage() {
               <Button type="submit" disabled={!canImport}>
                 {importMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
                 Import
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Register external/HSM key */}
+      <Dialog open={externalOpen} onOpenChange={setExternalOpen}>
+        <DialogContent>
+          <form onSubmit={submitExternal}>
+            <DialogHeader>
+              <DialogTitle>Register external/HSM key</DialogTitle>
+              <DialogDescription>
+                Store a public key whose private material lives in an HSM, KMS, or other
+                external signer. In-process signing requires AK_EXTERNAL_SIGN_COMMAND.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="external-key-name">Name</Label>
+                <Input
+                  id="external-key-name"
+                  value={externalForm.name}
+                  onChange={(e) => setExternalForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="hsm-release-key"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="external-key-ref">External key reference</Label>
+                <Input
+                  id="external-key-ref"
+                  value={externalForm.external_key_ref}
+                  onChange={(e) =>
+                    setExternalForm((f) => ({ ...f, external_key_ref: e.target.value }))
+                  }
+                  placeholder="pkcs11:token=ak;object=release-key"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="external-signing-provider">Signing provider</Label>
+                <Input
+                  id="external-signing-provider"
+                  value={externalForm.signing_provider ?? "hsm"}
+                  onChange={(e) =>
+                    setExternalForm((f) => ({ ...f, signing_provider: e.target.value }))
+                  }
+                  placeholder="hsm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="external-public-key">ASCII-armored public key</Label>
+                <textarea
+                  id="external-public-key"
+                  className="min-h-40 w-full rounded-md border bg-transparent px-3 py-2 font-mono text-xs"
+                  value={externalForm.public_key_pem}
+                  onChange={(e) =>
+                    setExternalForm((f) => ({ ...f, public_key_pem: e.target.value }))
+                  }
+                  placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setExternalOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!canRegisterExternal}>
+                {externalMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                Register
               </Button>
             </DialogFooter>
           </form>

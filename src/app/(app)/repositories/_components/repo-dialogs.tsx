@@ -77,6 +77,8 @@ interface DebianFormValues {
   upstreamGpgKeyId: string;
   signingKeyId: string;
   ignoreMissingIndexes: boolean;
+  packageQueries: string;
+  resolveDependencies: boolean;
 }
 
 const EMPTY_DEBIAN_FORM: DebianFormValues = {
@@ -91,6 +93,8 @@ const EMPTY_DEBIAN_FORM: DebianFormValues = {
   upstreamGpgKeyId: "",
   signingKeyId: "",
   ignoreMissingIndexes: false,
+  packageQueries: "",
+  resolveDependencies: false,
 };
 
 const DEBIAN_FILTER_HELPER =
@@ -98,7 +102,7 @@ const DEBIAN_FILTER_HELPER =
 
 function splitDebianList(value: string): string[] {
   return value
-    .split(",")
+    .split(/[,\n]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -122,6 +126,8 @@ function debianConfigToForm(config?: DebianRepositoryConfig): DebianFormValues {
     upstreamGpgKeyId: config?.upstream_gpg_key_id ?? "",
     signingKeyId: config?.signing_key_id ?? "",
     ignoreMissingIndexes: config?.ignore_missing_indexes ?? false,
+    packageQueries: (config?.package_queries ?? []).join(", "),
+    resolveDependencies: config?.resolve_dependencies ?? false,
   };
 }
 
@@ -138,6 +144,8 @@ function buildDebianConfig(values: DebianFormValues): DebianRepositoryConfig {
     upstream_gpg_key_id: values.upstreamGpgKeyId.trim() || undefined,
     signing_key_id: values.signingKeyId.trim() || undefined,
     ignore_missing_indexes: values.ignoreMissingIndexes,
+    package_queries: splitDebianList(values.packageQueries),
+    resolve_dependencies: values.resolveDependencies,
   };
 }
 
@@ -372,6 +380,33 @@ function DebianConfigFields({
                   />
                   <Label htmlFor={`${idPrefix}-debian-ignore-missing`}>Ignore missing indexes</Label>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor={`${idPrefix}-debian-package-queries`}>Package queries</Label>
+                <Textarea
+                  id={`${idPrefix}-debian-package-queries`}
+                  placeholder="nginx, curl*, openssh-*"
+                  value={values.packageQueries}
+                  onChange={(event) => update("packageQueries", event.target.value)}
+                  rows={2}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Comma or newline separated. Exact names or trailing <code>*</code> globs.
+                  Leave blank to include all packages matching component/architecture filters.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Switch
+                  id={`${idPrefix}-debian-resolve-deps`}
+                  checked={values.resolveDependencies}
+                  onCheckedChange={(checked) => update("resolveDependencies", checked)}
+                  disabled={!values.packageQueries.trim()}
+                />
+                <Label htmlFor={`${idPrefix}-debian-resolve-deps`}>
+                  Resolve dependencies for package queries
+                </Label>
               </div>
 
               {values.verifyUpstreamMetadata && (

@@ -742,6 +742,16 @@ export function RepoSettingsTab({ repository }: RepoSettingsTabProps) {
                   <dt className="text-muted-foreground">Missing indexes</dt>
                   <dd>{debianConfig.ignore_missing_indexes ? "Ignored" : "Error"}</dd>
 
+                  <dt className="text-muted-foreground">Package queries</dt>
+                  <dd>
+                    {debianConfig.package_queries && debianConfig.package_queries.length > 0
+                      ? debianConfig.package_queries.join(", ")
+                      : "All packages"}
+                  </dd>
+
+                  <dt className="text-muted-foreground">Resolve dependencies</dt>
+                  <dd>{debianConfig.resolve_dependencies ? "Enabled" : "Disabled"}</dd>
+
                   {repository.upstream_url && (
                     <>
                       <dt className="text-muted-foreground">Upstream</dt>

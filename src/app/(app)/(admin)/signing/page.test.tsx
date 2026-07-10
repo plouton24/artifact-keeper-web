@@ -56,6 +56,7 @@ const api = {
   listKeys: vi.fn(),
   createKey: vi.fn(),
   importPublicKey: vi.fn(),
+  registerExternalKey: vi.fn(),
   rotateKey: vi.fn(),
   revokeKey: vi.fn(),
   deleteKey: vi.fn(),
@@ -65,6 +66,7 @@ vi.mock("@/lib/api/signing", () => ({
     listKeys: (...a: unknown[]) => api.listKeys(...a),
     createKey: (...a: unknown[]) => api.createKey(...a),
     importPublicKey: (...a: unknown[]) => api.importPublicKey(...a),
+    registerExternalKey: (...a: unknown[]) => api.registerExternalKey(...a),
     rotateKey: (...a: unknown[]) => api.rotateKey(...a),
     revokeKey: (...a: unknown[]) => api.revokeKey(...a),
     deleteKey: (...a: unknown[]) => api.deleteKey(...a),
@@ -96,9 +98,10 @@ const KEY = {
   created_at: "2026-06-01T00:00:00Z",
 };
 
-// 5 mutations per render in order: create, import, rotate, revoke, delete.
-const createMutate = () => mutateFns[mutateFns.length - 5];
-const importMutate = () => mutateFns[mutateFns.length - 4];
+// 6 mutations per render in order: create, import, external, rotate, revoke, delete.
+const createMutate = () => mutateFns[mutateFns.length - 6];
+const importMutate = () => mutateFns[mutateFns.length - 5];
+const externalMutate = () => mutateFns[mutateFns.length - 4];
 const rotateMutate = () => mutateFns[mutateFns.length - 3];
 const revokeMutate = () => mutateFns[mutateFns.length - 2];
 const deleteMutate = () => mutateFns[mutateFns.length - 1];
@@ -201,6 +204,30 @@ describe("SigningPage", () => {
     );
   });
 
+  it("registers an external/HSM key from the dialog", async () => {
+    const user = userEvent.setup();
+    render(<SigningPage />);
+    await user.click(screen.getByRole("button", { name: /register external\/hsm key/i }));
+    await user.type(screen.getByLabelText("Name"), "hsm-release");
+    await user.type(
+      screen.getByLabelText(/External key reference/i),
+      "pkcs11:token=ak;object=release",
+    );
+    await user.type(
+      screen.getByLabelText(/ASCII-armored public key/i),
+      "-----BEGIN PGP PUBLIC KEY BLOCK-----\nxyz\n-----END PGP PUBLIC KEY BLOCK-----",
+    );
+    await user.click(screen.getByRole("button", { name: /^Register$/i }));
+    expect(externalMutate()).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "hsm-release",
+        external_key_ref: "pkcs11:token=ak;object=release",
+        public_key_pem: expect.stringContaining("BEGIN PGP PUBLIC KEY BLOCK"),
+        signing_provider: "hsm",
+      }),
+    );
+  });
+
   it("hides rotate for public-only trust anchors", () => {
     queryResponse = { data: [{ ...KEY, can_sign: false }], isLoading: false };
     render(<SigningPage />);
@@ -210,7 +237,7 @@ describe("SigningPage", () => {
 
   it("mutation callbacks invalidate + toast + call the API", () => {
     render(<SigningPage />);
-    const [create, importKey, rotate, revoke, del] = mutationConfigs;
+    const [create, importKey, external, rotate, revoke, del] = mutationConfigs;
     create.mutationFn({ name: "x" });
     expect(api.createKey).toHaveBeenCalledWith({ name: "x" });
     create.onSuccess?.(KEY);
@@ -220,11 +247,22 @@ describe("SigningPage", () => {
       public_key: "-----BEGIN-----",
     });
     importKey.onSuccess?.({ ...KEY, can_sign: false });
+    external.mutationFn({
+      name: "hsm",
+      public_key_pem: "-----BEGIN-----",
+      external_key_ref: "pkcs11:object=x",
+    });
+    expect(api.registerExternalKey).toHaveBeenCalledWith({
+      name: "hsm",
+      public_key_pem: "-----BEGIN-----",
+      external_key_ref: "pkcs11:object=x",
+    });
+    external.onSuccess?.({ ...KEY, external_key_ref: "pkcs11:object=x" });
     rotate.onSuccess?.();
     revoke.onSuccess?.();
     del.onSuccess?.();
-    expect(mockInvalidate).toHaveBeenCalledTimes(5);
-    expect(mockToastSuccess).toHaveBeenCalledTimes(5);
+    expect(mockInvalidate).toHaveBeenCalledTimes(6);
+    expect(mockToastSuccess).toHaveBeenCalledTimes(6);
     rotate.mutationFn("k1");
     revoke.mutationFn("k1");
     del.mutationFn("k1");
