@@ -19,6 +19,10 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_APP_VERSION: pkg.version,
     NEXT_PUBLIC_GIT_SHA: getGitSha(),
   },
+  // Allow HMR /dev resources when the UI is opened via 127.0.0.1 (common
+  // for local demos) instead of localhost. Without this, Next 15+ blocks
+  // cross-origin /_next/webpack-hmr and the login page can appear stuck.
+  allowedDevOrigins: ["127.0.0.1", "localhost"],
   output: "standalone",
   devIndicators: false,
   transpilePackages: ["@artifact-keeper/sdk"],

@@ -52,11 +52,19 @@ vi.mock("sonner", () => ({
   toast: { success: (...a: unknown[]) => mockToastSuccess(...a), error: vi.fn() },
 }));
 
-const api = { listKeys: vi.fn(), createKey: vi.fn(), rotateKey: vi.fn(), revokeKey: vi.fn(), deleteKey: vi.fn() };
+const api = {
+  listKeys: vi.fn(),
+  createKey: vi.fn(),
+  importPublicKey: vi.fn(),
+  rotateKey: vi.fn(),
+  revokeKey: vi.fn(),
+  deleteKey: vi.fn(),
+};
 vi.mock("@/lib/api/signing", () => ({
   default: {
     listKeys: (...a: unknown[]) => api.listKeys(...a),
     createKey: (...a: unknown[]) => api.createKey(...a),
+    importPublicKey: (...a: unknown[]) => api.importPublicKey(...a),
     rotateKey: (...a: unknown[]) => api.rotateKey(...a),
     revokeKey: (...a: unknown[]) => api.revokeKey(...a),
     deleteKey: (...a: unknown[]) => api.deleteKey(...a),
@@ -78,6 +86,7 @@ const KEY = {
   fingerprint: "AB12CD",
   key_id: null,
   public_key_pem: "-----BEGIN PGP PUBLIC KEY-----\nabc\n-----END-----",
+  can_sign: true,
   is_active: true,
   uid_name: null,
   uid_email: null,
@@ -87,8 +96,9 @@ const KEY = {
   created_at: "2026-06-01T00:00:00Z",
 };
 
-// 4 mutations per render in order: create, rotate, revoke, delete.
-const createMutate = () => mutateFns[mutateFns.length - 4];
+// 5 mutations per render in order: create, import, rotate, revoke, delete.
+const createMutate = () => mutateFns[mutateFns.length - 5];
+const importMutate = () => mutateFns[mutateFns.length - 4];
 const rotateMutate = () => mutateFns[mutateFns.length - 3];
 const revokeMutate = () => mutateFns[mutateFns.length - 2];
 const deleteMutate = () => mutateFns[mutateFns.length - 1];
@@ -173,17 +183,48 @@ describe("SigningPage", () => {
     expect(getMutate()).toHaveBeenCalledWith("k1");
   });
 
+  it("imports a public trust anchor from the dialog", async () => {
+    const user = userEvent.setup();
+    render(<SigningPage />);
+    await user.click(screen.getByRole("button", { name: /import public key/i }));
+    await user.type(screen.getByLabelText("Name"), "ubuntu-archive-key");
+    await user.type(
+      screen.getByLabelText(/ASCII-armored public key/i),
+      "-----BEGIN PGP PUBLIC KEY BLOCK-----\nxyz\n-----END PGP PUBLIC KEY BLOCK-----",
+    );
+    await user.click(screen.getByRole("button", { name: /^Import$/i }));
+    expect(importMutate()).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "ubuntu-archive-key",
+        public_key: expect.stringContaining("BEGIN PGP PUBLIC KEY BLOCK"),
+      }),
+    );
+  });
+
+  it("hides rotate for public-only trust anchors", () => {
+    queryResponse = { data: [{ ...KEY, can_sign: false }], isLoading: false };
+    render(<SigningPage />);
+    expect(screen.getByText("trust anchor")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Rotate release/i })).not.toBeInTheDocument();
+  });
+
   it("mutation callbacks invalidate + toast + call the API", () => {
     render(<SigningPage />);
-    const [create, rotate, revoke, del] = mutationConfigs;
+    const [create, importKey, rotate, revoke, del] = mutationConfigs;
     create.mutationFn({ name: "x" });
     expect(api.createKey).toHaveBeenCalledWith({ name: "x" });
     create.onSuccess?.(KEY);
+    importKey.mutationFn({ name: "ubuntu", public_key: "-----BEGIN-----" });
+    expect(api.importPublicKey).toHaveBeenCalledWith({
+      name: "ubuntu",
+      public_key: "-----BEGIN-----",
+    });
+    importKey.onSuccess?.({ ...KEY, can_sign: false });
     rotate.onSuccess?.();
     revoke.onSuccess?.();
     del.onSuccess?.();
-    expect(mockInvalidate).toHaveBeenCalledTimes(4);
-    expect(mockToastSuccess).toHaveBeenCalledTimes(4);
+    expect(mockInvalidate).toHaveBeenCalledTimes(5);
+    expect(mockToastSuccess).toHaveBeenCalledTimes(5);
     rotate.mutationFn("k1");
     revoke.mutationFn("k1");
     del.mutationFn("k1");

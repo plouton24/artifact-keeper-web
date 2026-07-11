@@ -11,7 +11,7 @@ import { useAdminSettings } from "@/hooks/use-admin-settings";
 import lifecycleApi from "@/lib/api/lifecycle";
 import { mutationErrorToast } from "@/lib/error-utils";
 import { formatBytes } from "@/lib/utils";
-import type { Repository } from "@/types";
+import type { DebianSyncResponse, Repository } from "@/types";
 import type { LifecyclePolicy, PolicyType } from "@/types/lifecycle";
 import { POLICY_TYPE_LABELS } from "@/types/lifecycle";
 import { quotaToBytes, bytesToQuota } from "./repo-dialogs";
@@ -94,6 +94,34 @@ function formatTtlHint(seconds: number): string {
   if (minutes) parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
   if (secs && parts.length === 0) parts.push(`${secs} second${secs === 1 ? "" : "s"}`);
   return parts.join(" ");
+}
+
+const DEBIAN_METADATA_STRATEGY_LABELS: Record<string, string> = {
+  upstream_passthrough: "Upstream passthrough",
+  filter_and_generate: "Filter and generate",
+  filter_generate_and_sign: "Filter, generate, and sign",
+  hosted_generate: "Hosted metadata",
+};
+
+const DEBIAN_PACKAGE_FETCH_LABELS: Record<string, string> = {
+  cache_on_request: "Cache on request",
+  prefetch_selected: "Prefetch selected packages",
+  passthrough: "Direct passthrough",
+};
+
+function formatConfigList(values: string[] | undefined, fallback = "All"): string {
+  const normalized = values?.map((value) => value.trim()).filter(Boolean) ?? [];
+  return normalized.length > 0 ? normalized.join(", ") : fallback;
+}
+
+function countDebianSyncItems(
+  response: DebianSyncResponse,
+  key: "package_indexes" | "source_indexes" | "package_files" | "source_files",
+): number {
+  return response.plans.reduce((total, plan) => {
+    const items = plan[key];
+    return total + (Array.isArray(items) ? items.length : 0);
+  }, 0);
 }
 
 export interface UpdateRepositoryFields {
@@ -194,6 +222,10 @@ export function RepoSettingsTab({ repository }: RepoSettingsTabProps) {
     isRemote &&
     cacheTtlOverride !== undefined &&
     parsedCacheTtl !== currentCacheTtlSeconds;
+  const debianConfig =
+    repository.format === "debian"
+      ? repository.debian ?? repository.debian_config
+      : undefined;
 
   // First-class versioning is only offered where the backend applies it:
   // Generic/Mlmodel repositories (backend `versioning_applies`, #571).
@@ -242,6 +274,26 @@ export function RepoSettingsTab({ repository }: RepoSettingsTabProps) {
       toast.success("Cache TTL saved");
     },
     onError: mutationErrorToast("Failed to save cache TTL"),
+  });
+
+  const [lastDebianSync, setLastDebianSync] = useState<DebianSyncResponse | null>(null);
+  const debianSyncMutation = useMutation({
+    mutationFn: () => repositoriesApi.syncDebian(repository.key),
+    onSuccess: (result) => {
+      setLastDebianSync(result);
+      queryClient.invalidateQueries({ queryKey: ["artifacts", repository.key] });
+      queryClient.invalidateQueries({ queryKey: ["repository", repository.key] });
+      queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      const indexedPackages = countDebianSyncItems(result, "package_files");
+      const indexedSources = countDebianSyncItems(result, "source_files");
+      toast.success("Debian sync finished", {
+        description:
+          `${indexedPackages} package file(s) indexed, ` +
+          `${result.prefetched_packages} package file(s) prefetched` +
+          (indexedSources > 0 ? `, ${indexedSources} source file(s) indexed` : ""),
+      });
+    },
+    onError: mutationErrorToast("Failed to sync Debian repository"),
   });
 
   const handleSave = useCallback(async () => {
@@ -701,6 +753,153 @@ export function RepoSettingsTab({ repository }: RepoSettingsTabProps) {
         repository.repo_type === "staging") && (
         <>
           <RoutingRulesSettings repository={repository} />
+          <Separator />
+        </>
+      )}
+
+      {/* -- Debian/APT Section -- */}
+      {repository.format === "debian" && (
+        <>
+          <section aria-labelledby="settings-debian-heading">
+            <div className="mb-4">
+              <h3 id="settings-debian-heading" className="text-base font-semibold">
+                Debian / APT
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Saved distribution, component, architecture, metadata, and package-fetch
+                settings for this repository.
+              </p>
+            </div>
+
+            {debianConfig ? (
+              <div className="space-y-4">
+                <dl className="grid grid-cols-[160px_1fr] gap-x-4 gap-y-2 text-sm">
+                  <dt className="text-muted-foreground">Distributions</dt>
+                  <dd>{formatConfigList(debianConfig.distribution_paths, "Default")}</dd>
+
+                  <dt className="text-muted-foreground">Components</dt>
+                  <dd>{formatConfigList(debianConfig.components)}</dd>
+
+                  <dt className="text-muted-foreground">Architectures</dt>
+                  <dd>{formatConfigList(debianConfig.architectures)}</dd>
+
+                  <dt className="text-muted-foreground">Metadata</dt>
+                  <dd>
+                    {DEBIAN_METADATA_STRATEGY_LABELS[
+                      debianConfig.metadata_strategy ?? "upstream_passthrough"
+                    ] ?? debianConfig.metadata_strategy}
+                  </dd>
+
+                  <dt className="text-muted-foreground">Package fetching</dt>
+                  <dd>
+                    {DEBIAN_PACKAGE_FETCH_LABELS[
+                      debianConfig.package_fetch_strategy ?? "cache_on_request"
+                    ] ?? debianConfig.package_fetch_strategy}
+                  </dd>
+
+                  <dt className="text-muted-foreground">Source packages</dt>
+                  <dd>{debianConfig.include_source_packages ? "Included" : "Excluded"}</dd>
+
+                  <dt className="text-muted-foreground">Missing indexes</dt>
+                  <dd>{debianConfig.ignore_missing_indexes ? "Ignored" : "Error"}</dd>
+
+                  <dt className="text-muted-foreground">Package queries</dt>
+                  <dd>
+                    {debianConfig.package_queries && debianConfig.package_queries.length > 0
+                      ? debianConfig.package_queries.join(", ")
+                      : "All packages"}
+                  </dd>
+
+                  <dt className="text-muted-foreground">Resolve dependencies</dt>
+                  <dd>{debianConfig.resolve_dependencies ? "Enabled" : "Disabled"}</dd>
+
+                  {repository.upstream_url && (
+                    <>
+                      <dt className="text-muted-foreground">Upstream</dt>
+                      <dd className="break-all">{repository.upstream_url}</dd>
+                    </>
+                  )}
+
+                  {debianConfig.apt_source_example && (
+                    <>
+                      <dt className="text-muted-foreground">APT source</dt>
+                      <dd>
+                        <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                          {debianConfig.apt_source_example}
+                        </code>
+                      </dd>
+                    </>
+                  )}
+                </dl>
+
+                {debianConfig.warnings && debianConfig.warnings.length > 0 && (
+                  <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 size-4 text-yellow-600 dark:text-yellow-400" />
+                      <div>
+                        <p className="font-medium">Configuration warnings</p>
+                        <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+                          {debianConfig.warnings.map((warning) => (
+                            <li key={warning}>{warning}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {repository.repo_type === "remote" && (
+                  <div className="rounded-md border p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">Remote sync</p>
+                        <p className="text-xs text-muted-foreground">
+                          Refreshes filtered Release/Packages metadata now. With
+                          <span className="font-medium"> Prefetch selected packages</span>,
+                          sync also downloads selected package files into the proxy cache;
+                          large Ubuntu suites can take several minutes.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => debianSyncMutation.mutate()}
+                        disabled={debianSyncMutation.isPending}
+                      >
+                        {debianSyncMutation.isPending ? (
+                          <>
+                            <Loader2 className="size-4 animate-spin" />
+                            Syncing...
+                          </>
+                        ) : (
+                          <>
+                            <Play className="size-4" />
+                            Sync now
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    {lastDebianSync && (
+                      <p role="status" className="mt-3 text-xs text-muted-foreground">
+                        Last sync indexed {countDebianSyncItems(lastDebianSync, "package_files")} package
+                        file(s) across {lastDebianSync.plans.length} distribution(s), and
+                        prefetched {lastDebianSync.prefetched_packages} package file(s).
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                No advanced Debian/APT configuration is saved for this repository. Use
+                Edit Repository to enable Debian settings and choose distributions,
+                components, architectures, metadata handling, and package-fetch policy.
+              </div>
+            )}
+          </section>
+
           <Separator />
         </>
       )}

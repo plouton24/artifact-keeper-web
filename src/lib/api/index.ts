@@ -24,7 +24,12 @@ export type { PypiTrack } from './pypi-tracks';
 export { default as curationApi } from './curation';
 export type { CurationPackage, ListCurationParams } from './curation';
 export { default as signingApi } from './signing';
-export type { SigningKey, SigningConfig, CreateSigningKeyRequest } from './signing';
+export type {
+  SigningKey,
+  SigningConfig,
+  CreateSigningKeyRequest,
+  ImportPublicKeyRequest,
+} from './signing';
 export { default as syncPoliciesApi } from './sync-policies';
 export type { SyncPolicy, CreateSyncPolicyRequest } from './sync-policies';
 export { default as promotionRulesApi } from './promotion-rules';

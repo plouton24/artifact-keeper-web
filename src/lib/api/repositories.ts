@@ -30,6 +30,8 @@ import type {
   VirtualMembersResponse,
   RepositoryFormat,
   RepositoryType,
+  DebianRepositoryConfig,
+  DebianSyncResponse,
 } from '@/types';
 
 export interface ListRepositoriesParams {
@@ -143,12 +145,13 @@ const REPO_FORMATS = new Set<RepositoryFormat>([
 ]);
 
 function adaptRepository(sdk: RepositoryResponse): Repository {
-  // The backend ships `versioning_enabled` (artifact-keeper#2367) on the
-  // repository response, but the generated SDK type doesn't carry it until
-  // the SDK regenerates from the upgraded OpenAPI spec. Read it off the
-  // runtime object via a narrowed cast (same approach as the artifact cache
-  // fields in artifacts.ts); collapse to a direct access after SDK regen.
-  const sdkAny = sdk as RepositoryResponse & { versioning_enabled?: boolean };
+  // Widen the runtime type to cover fields the generated SDK type doesn't carry
+  // yet: Debian config (both field aliases) and versioning_enabled (#2367).
+  const extended = sdk as RepositoryResponse & {
+    debian?: DebianRepositoryConfig;
+    debian_config?: DebianRepositoryConfig;
+    versioning_enabled?: boolean;
+  };
   return {
     id: sdk.id,
     key: sdk.key,
@@ -167,12 +170,13 @@ function adaptRepository(sdk: RepositoryResponse): Repository {
     repo_type: narrowEnum(sdk.repo_type, REPO_TYPES, 'local'),
     is_public: sdk.is_public,
     // Default false: a backend that predates #2367 simply has no versioning.
-    versioning_enabled: sdkAny.versioning_enabled ?? false,
+    versioning_enabled: extended.versioning_enabled ?? false,
     storage_used_bytes: sdk.storage_used_bytes,
     quota_bytes: sdk.quota_bytes ?? undefined,
     upstream_url: sdk.upstream_url ?? undefined,
     upstream_auth_type: sdk.upstream_auth_type ?? undefined,
     upstream_auth_configured: sdk.upstream_auth_configured,
+    debian: extended.debian ?? extended.debian_config,
     created_at: sdk.created_at,
     updated_at: sdk.updated_at,
   };
@@ -214,7 +218,10 @@ export const repositoriesApi = {
   },
 
   create: async (input: CreateRepositoryRequest): Promise<Repository> => {
-    const body: SdkCreateRepositoryRequest = {
+    const debian = input.debian ?? input.debian_config;
+    const body: SdkCreateRepositoryRequest & {
+      debian?: DebianRepositoryConfig;
+    } = {
       key: input.key,
       name: input.name,
       description: input.description,
@@ -233,6 +240,7 @@ export const repositoriesApi = {
       upstream_auth_type: input.upstream_auth_type,
       upstream_username: input.upstream_username,
       upstream_password: input.upstream_password,
+      ...(debian !== undefined ? { debian } : {}),
     };
     const { data, error } = await createRepository({ body });
     if (error) throw error;
@@ -240,17 +248,27 @@ export const repositoriesApi = {
   },
 
   update: async (key: string, input: Partial<CreateRepositoryRequest>): Promise<Repository> => {
+    // Use !== undefined (not ??) so an explicit null is forwarded to the backend
+    // as debian: null, which clears the Debian config (Fix: "Disable Debian config
+    // clears it"). Fall back to the legacy debian_config alias when debian is absent.
+    const debian = input.debian !== undefined ? input.debian : input.debian_config;
     // `versioning_enabled` (artifact-keeper#2367) is accepted by the backend
     // update endpoint but is not on the generated SDK request type yet, so
     // widen the body via a narrowed cast (mirrors adaptRepository above).
     // When omitted the backend leaves the flag unchanged.
-    const body: SdkUpdateRepositoryRequest & { versioning_enabled?: boolean } = {
+    const body: SdkUpdateRepositoryRequest & {
+      upstream_url?: string;
+      debian?: DebianRepositoryConfig | null;
+      versioning_enabled?: boolean;
+    } = {
       name: input.name,
       description: input.description,
       is_public: input.is_public,
       quota_bytes: input.quota_bytes,
       key: input.key,
       versioning_enabled: input.versioning_enabled,
+      ...(input.upstream_url !== undefined ? { upstream_url: input.upstream_url } : {}),
+      ...(debian !== undefined ? { debian } : {}),
     };
     const { data, error } = await updateRepository({ path: { key }, body });
     if (error) throw error;
@@ -303,6 +321,13 @@ export const repositoriesApi = {
   testUpstream: async (repoKey: string): Promise<{ success: boolean; message?: string }> => {
     return apiFetch(`/api/v1/repositories/${encodeURIComponent(repoKey)}/test-upstream`, {
       method: 'POST',
+    });
+  },
+
+  syncDebian: async (repoKey: string): Promise<DebianSyncResponse> => {
+    return apiFetch<DebianSyncResponse>(`/debian/${encodeURIComponent(repoKey)}/sync`, {
+      method: 'POST',
+      body: '{}',
     });
   },
 
