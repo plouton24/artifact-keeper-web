@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, fireEvent, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RepoDialogs } from './repo-dialogs';
@@ -87,6 +87,339 @@ const defaultProps = {
   deletePending: false,
   availableRepos: [],
 };
+
+describe('RepoDialogs - Debian/APT configuration', () => {
+  beforeEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shows Debian settings as an opt-in section', async () => {
+    const user = userEvent.setup();
+    render(<RepoDialogs {...defaultProps} />);
+
+    expect(screen.queryByText('APT filtering and metadata settings')).toBeNull();
+    const dialog = screen.getByRole('dialog');
+    const selects = within(dialog).getAllByTestId('mock-select');
+    await user.selectOptions(selects[0], 'debian');
+
+    expect(screen.getByText('APT filtering and metadata settings')).toBeTruthy();
+    expect(screen.queryByLabelText('Distribution paths')).toBeNull();
+
+    await user.click(screen.getByLabelText('Enable'));
+    expect(screen.getByLabelText('Distribution paths')).toBeTruthy();
+    expect(screen.getByText('Advanced Debian/APT settings')).toBeTruthy();
+  });
+
+  it('submits remote Debian filtering and metadata settings to the backend payload', () => {
+    const onCreateSubmit = vi.fn();
+    render(<RepoDialogs {...defaultProps} onCreateSubmit={onCreateSubmit} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'debian-proxy' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Debian Proxy' } });
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.change(screen.getByLabelText('Distribution paths'), {
+      target: { value: 'bookworm, bookworm-updates' },
+    });
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+    fireEvent.change(screen.getByLabelText('Components'), {
+      target: { value: 'main, contrib' },
+    });
+    fireEvent.change(screen.getByLabelText('Architectures'), {
+      target: { value: 'amd64, arm64' },
+    });
+    fireEvent.change(screen.getByLabelText('Package queries'), {
+      target: { value: 'nginx, curl*' },
+    });
+    fireEvent.click(screen.getByLabelText('Resolve dependencies for package queries'));
+
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[2], { target: { value: 'filter_and_generate' } });
+    fireEvent.change(selects[3], { target: { value: 'prefetch_selected' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    expect(onCreateSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format: 'debian',
+        repo_type: 'remote',
+        upstream_url: 'https://deb.debian.org/debian',
+        debian: expect.objectContaining({
+          distribution_paths: ['bookworm', 'bookworm-updates'],
+          components: ['main', 'contrib'],
+          architectures: ['amd64', 'arm64'],
+          metadata_strategy: 'filter_and_generate',
+          package_fetch_strategy: 'prefetch_selected',
+          include_source_packages: false,
+          flat_repository: false,
+          verify_upstream_metadata: false,
+          ignore_missing_indexes: false,
+          package_queries: ['nginx', 'curl*'],
+          resolve_dependencies: true,
+        }),
+      }),
+    );
+  });
+
+  it('does not add Debian config when the optional section stays disabled', () => {
+    const onCreateSubmit = vi.fn();
+    render(<RepoDialogs {...defaultProps} onCreateSubmit={onCreateSubmit} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'debian-proxy' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Debian Proxy' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    const payload = onCreateSubmit.mock.calls[0][0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        format: 'debian',
+        repo_type: 'remote',
+        upstream_url: 'https://deb.debian.org/debian',
+      }),
+    );
+    expect(payload.debian).toBeUndefined();
+    expect(payload.debian_config).toBeUndefined();
+  });
+
+  it('warns that passthrough ignores component/architecture filters', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+    fireEvent.change(screen.getByLabelText('Components'), {
+      target: { value: 'main' },
+    });
+
+    expect(
+      screen.getByText(/filters are ignored while metadata strategy is upstream passthrough/i),
+    ).toBeTruthy();
+  });
+
+  it('auto-enables verify upstream when selecting filter, generate, and sign', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[2], { target: { value: 'filter_generate_and_sign' } });
+
+    expect(
+      (screen.getByLabelText('Verify upstream metadata') as HTMLButtonElement)
+        .getAttribute('data-state') === 'checked' ||
+        (screen.getByLabelText('Verify upstream metadata') as HTMLInputElement)
+          .checked,
+    ).toBe(true);
+    expect(screen.getByLabelText('Upstream GPG key')).toBeTruthy();
+    expect(screen.getByLabelText('Signing key')).toBeTruthy();
+    expect(
+      screen.getByText(/requires an upstream GPG key ID/i),
+    ).toBeTruthy();
+  });
+
+  it('warns when metadata strategy is upstream_passthrough and package queries are non-empty', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+
+    // Default metadata strategy is upstream_passthrough; enter a package query
+    fireEvent.change(screen.getByLabelText('Package queries'), {
+      target: { value: 'nginx' },
+    });
+
+    expect(
+      screen.getByText(/package queries are ignored while metadata strategy is upstream passthrough/i),
+    ).toBeTruthy();
+  });
+
+  it('warns when package fetch strategy is passthrough and package queries are non-empty', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[1], { target: { value: 'remote' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+
+    // Switch metadata strategy away from passthrough so only the fetch strategy warning fires
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[2], { target: { value: 'filter_and_generate' } });
+
+    // Set package fetch strategy to passthrough
+    selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[3], { target: { value: 'passthrough' } });
+
+    // Enter a package query
+    fireEvent.change(screen.getByLabelText('Package queries'), {
+      target: { value: 'nginx' },
+    });
+
+    expect(
+      screen.getByText(/package queries are ignored when package fetch strategy is passthrough/i),
+    ).toBeTruthy();
+  });
+
+  it('shows flat repository help text when flat repository switch is visible', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+
+    expect(
+      screen.getByText(/single distribution path ending with/i),
+    ).toBeTruthy();
+  });
+
+  it('warns when flat repository has multiple distribution paths', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.change(screen.getByLabelText('Distribution paths'), {
+      target: { value: 'jammy, focal' },
+    });
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+    fireEvent.click(screen.getByLabelText('Flat repository'));
+
+    expect(
+      screen.getByText(/flat repository mode supports only one distribution path/i),
+    ).toBeTruthy();
+  });
+
+  it('warns when flat repository distribution path does not end with /', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.change(screen.getByLabelText('Distribution paths'), {
+      target: { value: 'jammy' },
+    });
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+    fireEvent.click(screen.getByLabelText('Flat repository'));
+
+    expect(
+      screen.getByText(/flat repository distribution path must end with "\/"/i),
+    ).toBeTruthy();
+  });
+
+  it('warns when flat repository has non-empty components', () => {
+    render(<RepoDialogs {...defaultProps} />);
+
+    const dialog = screen.getByRole('dialog');
+    let selects = within(dialog).getAllByTestId('mock-select');
+    fireEvent.change(selects[0], { target: { value: 'debian' } });
+
+    fireEvent.click(screen.getByLabelText('Enable'));
+    fireEvent.click(screen.getByText('Advanced Debian/APT settings'));
+
+    fireEvent.change(screen.getByLabelText('Components'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByLabelText('Flat repository'));
+
+    expect(
+      screen.getByText(/flat repositories do not use components/i),
+    ).toBeTruthy();
+  });
+
+  it('sends debian: null on edit submit when editDebianEnabled is false for a debian repo', () => {
+    const onEditSubmit = vi.fn();
+    const debianRepo = {
+      id: '2',
+      key: 'debian-repo',
+      name: 'Debian Repo',
+      description: '',
+      format: 'debian' as const,
+      repo_type: 'local' as const,
+      is_public: true,
+      created_at: '2024-01-01',
+      updated_at: '2024-01-01',
+      artifact_count: 0,
+      total_size: 0,
+      storage_used_bytes: 0,
+      debian: {
+        distribution_paths: ['bookworm'],
+        components: ['main'],
+        architectures: ['amd64'],
+        metadata_strategy: 'upstream_passthrough' as const,
+        package_fetch_strategy: 'cache_on_request' as const,
+        include_source_packages: false,
+        flat_repository: false,
+        verify_upstream_metadata: false,
+        ignore_missing_indexes: false,
+      },
+    };
+
+    render(
+      <RepoDialogs
+        {...defaultProps}
+        createOpen={false}
+        editOpen={true}
+        editRepo={debianRepo}
+        onEditSubmit={onEditSubmit}
+      />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    // The Debian section is enabled by default (repo has debian config).
+    // Disable it via the Enable toggle.
+    fireEvent.click(screen.getByLabelText('Enable'));
+
+    // Submit
+    fireEvent.click(within(dialog).getByRole('button', { name: /save changes/i }));
+
+    expect(onEditSubmit).toHaveBeenCalledWith(
+      'debian-repo',
+      expect.objectContaining({ debian: null }),
+    );
+  });
+});
 
 describe('RepoDialogs - Staging Hint', () => {
   beforeEach(() => {

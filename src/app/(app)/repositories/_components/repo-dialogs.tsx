@@ -1,7 +1,16 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import type { Repository, CreateRepositoryRequest, RepositoryFormat, RepositoryType, VirtualRepoMemberInput } from "@/types";
+import type {
+  Repository,
+  CreateRepositoryRequest,
+  DebianRepositoryConfig,
+  DebianMetadataStrategy,
+  DebianPackageFetchStrategy,
+  RepositoryFormat,
+  RepositoryType,
+  VirtualRepoMemberInput,
+} from "@/types";
 import { FORMAT_OPTIONS, TYPE_OPTIONS } from "../_lib/constants";
 import { DEFAULT_UPSTREAM_URLS } from "../_lib/default-upstream-urls";
 
@@ -56,6 +65,427 @@ export function bytesToQuota(bytes: number | undefined | null): { value: string;
   return { value: String(Math.round(bytes / BYTES_PER_MB)), unit: "MB" };
 }
 
+interface DebianFormValues {
+  distributionPaths: string;
+  components: string;
+  architectures: string;
+  includeSourcePackages: boolean;
+  flatRepository: boolean;
+  metadataStrategy: DebianMetadataStrategy;
+  packageFetchStrategy: DebianPackageFetchStrategy;
+  verifyUpstreamMetadata: boolean;
+  upstreamGpgKeyId: string;
+  signingKeyId: string;
+  ignoreMissingIndexes: boolean;
+  packageQueries: string;
+  resolveDependencies: boolean;
+}
+
+const EMPTY_DEBIAN_FORM: DebianFormValues = {
+  distributionPaths: "",
+  components: "",
+  architectures: "",
+  includeSourcePackages: false,
+  flatRepository: false,
+  metadataStrategy: "upstream_passthrough",
+  packageFetchStrategy: "cache_on_request",
+  verifyUpstreamMetadata: false,
+  upstreamGpgKeyId: "",
+  signingKeyId: "",
+  ignoreMissingIndexes: false,
+  packageQueries: "",
+  resolveDependencies: false,
+};
+
+const DEBIAN_FILTER_HELPER =
+  "Leave blank or use * to include all values advertised by upstream metadata.";
+
+function splitDebianList(value: string): string[] {
+  return value
+    .split(/[,\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function debianListResolvesToAll(value: string): boolean {
+  const values = splitDebianList(value);
+  return values.length === 0 || values.includes("*");
+}
+
+function debianConfigToForm(config?: DebianRepositoryConfig): DebianFormValues {
+  const legacy = config as (DebianRepositoryConfig & { distributions?: string[] }) | undefined;
+  return {
+    distributionPaths: (config?.distribution_paths ?? legacy?.distributions ?? []).join(", "),
+    components: config?.components?.join(", ") ?? "",
+    architectures: config?.architectures?.join(", ") ?? "",
+    includeSourcePackages: config?.include_source_packages ?? false,
+    flatRepository: config?.flat_repository ?? false,
+    metadataStrategy: config?.metadata_strategy ?? "upstream_passthrough",
+    packageFetchStrategy: config?.package_fetch_strategy ?? "cache_on_request",
+    verifyUpstreamMetadata: config?.verify_upstream_metadata ?? false,
+    upstreamGpgKeyId: config?.upstream_gpg_key_id ?? "",
+    signingKeyId: config?.signing_key_id ?? "",
+    ignoreMissingIndexes: config?.ignore_missing_indexes ?? false,
+    packageQueries: (config?.package_queries ?? []).join(", "),
+    resolveDependencies: config?.resolve_dependencies ?? false,
+  };
+}
+
+function buildDebianConfig(values: DebianFormValues): DebianRepositoryConfig {
+  return {
+    distribution_paths: splitDebianList(values.distributionPaths),
+    components: splitDebianList(values.components),
+    architectures: splitDebianList(values.architectures),
+    include_source_packages: values.includeSourcePackages,
+    flat_repository: values.flatRepository,
+    metadata_strategy: values.metadataStrategy,
+    package_fetch_strategy: values.packageFetchStrategy,
+    verify_upstream_metadata: values.verifyUpstreamMetadata,
+    // Send null (not undefined) so JSON includes the field as null, which tells
+    // the backend to clear a previously-stored key ID rather than leaving it
+    // unchanged (Fix: "Clear trust/signing keys send null").
+    upstream_gpg_key_id: values.upstreamGpgKeyId.trim() || null,
+    signing_key_id: values.signingKeyId.trim() || null,
+    ignore_missing_indexes: values.ignoreMissingIndexes,
+    package_queries: splitDebianList(values.packageQueries),
+    resolve_dependencies: values.resolveDependencies,
+  };
+}
+
+function debianWarnings(values: DebianFormValues): string[] {
+  const componentsAll = debianListResolvesToAll(values.components);
+  const architecturesAll = debianListResolvesToAll(values.architectures);
+  const packageQueriesNonEmpty = splitDebianList(values.packageQueries).length > 0;
+  const warnings: string[] = [];
+
+  if (componentsAll) {
+    warnings.push(
+      "Components are set to all. Artifact Keeper will read all components advertised by the upstream Release metadata for the selected distribution(s). This may increase metadata size, package visibility, and storage usage if package prefetching is enabled.",
+    );
+  }
+  if (architecturesAll) {
+    warnings.push(
+      "Architectures are set to all. Artifact Keeper will read all architectures advertised by the upstream Release metadata for the selected distribution(s). This may significantly increase metadata size and package visibility. Use a specific architecture such as amd64 or arm64 to reduce scope.",
+    );
+  }
+  if (values.packageFetchStrategy === "prefetch_selected" && (componentsAll || architecturesAll)) {
+    warnings.push(
+      "Prefetch is enabled with broad component or architecture selection. Artifact Keeper may download a large number of packages and consume significant storage. Consider using cache_on_request or narrowing the filters.",
+    );
+  }
+  if (
+    values.metadataStrategy === "upstream_passthrough" &&
+    (!componentsAll || !architecturesAll)
+  ) {
+    warnings.push(
+      "Component and architecture filters are ignored while metadata strategy is upstream passthrough. Artifact Keeper serves upstream Release metadata unchanged. Switch to filter and generate (or filter, generate, and sign) for filters to take effect.",
+    );
+  }
+  if (values.metadataStrategy === "upstream_passthrough" && packageQueriesNonEmpty) {
+    warnings.push(
+      "Package queries are ignored while metadata strategy is upstream passthrough. Switch to filter and generate or filter, generate, and sign for package filtering to take effect.",
+    );
+  }
+  if (values.packageFetchStrategy === "passthrough" && packageQueriesNonEmpty) {
+    warnings.push(
+      "Package queries are ignored when package fetch strategy is passthrough. Switch to cache on request or prefetch selected for package filtering to take effect.",
+    );
+  }
+  if (values.metadataStrategy === "filter_generate_and_sign" && !values.verifyUpstreamMetadata) {
+    warnings.push(
+      "Filter, generate, and sign requires verify upstream metadata so Artifact Keeper only re-signs metadata from a verified upstream.",
+    );
+  }
+  if (values.metadataStrategy === "filter_generate_and_sign" && !values.signingKeyId.trim()) {
+    warnings.push(
+      "Filter, generate, and sign requires a signing key ID (a key with private material from Signing Keys).",
+    );
+  }
+  if (values.verifyUpstreamMetadata && !values.upstreamGpgKeyId.trim()) {
+    warnings.push(
+      "Verify upstream metadata requires an upstream GPG key ID. Import the Debian/Ubuntu archive public key on the Signing Keys page, then enter its name, fingerprint, or key ID here.",
+    );
+  }
+  if (values.flatRepository) {
+    const paths = splitDebianList(values.distributionPaths);
+    if (paths.length > 1) {
+      warnings.push(
+        "Flat repository mode supports only one distribution path. Remove extra paths or disable flat repository.",
+      );
+    }
+    if (paths.length === 1 && !paths[0].endsWith("/")) {
+      warnings.push(
+        `Flat repository distribution path must end with "/" (e.g., "${paths[0]}/").`,
+      );
+    }
+    if (!componentsAll) {
+      warnings.push(
+        "Flat repositories do not use components. Set components to all or leave empty.",
+      );
+    }
+  }
+
+  return warnings;
+}
+interface DebianConfigFieldsProps {
+  idPrefix: "create" | "edit";
+  values: DebianFormValues;
+  onChange: (values: DebianFormValues) => void;
+  enabled: boolean;
+  onEnabledChange: (enabled: boolean) => void;
+  isRemote: boolean;
+}
+
+function DebianConfigFields({
+  idPrefix,
+  values,
+  onChange,
+  enabled,
+  onEnabledChange,
+  isRemote,
+}: DebianConfigFieldsProps) {
+  const update = <K extends keyof DebianFormValues>(
+    key: K,
+    value: DebianFormValues[K],
+  ) => onChange({ ...values, [key]: value });
+  const warnings = enabled ? debianWarnings(values) : [];
+
+  return (
+    <div className="space-y-4 rounded-md border p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold">APT filtering and metadata settings</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch
+            id={`${idPrefix}-debian-enabled`}
+            checked={enabled}
+            onCheckedChange={onEnabledChange}
+          />
+          <Label htmlFor={`${idPrefix}-debian-enabled`} className="whitespace-nowrap">
+            Enable
+          </Label>
+        </div>
+      </div>
+
+      {enabled && (
+        <>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-debian-distribution-paths`}>Distribution paths</Label>
+            <Input
+              id={`${idPrefix}-debian-distribution-paths`}
+              placeholder="jammy, jammy-updates"
+              value={values.distributionPaths}
+              onChange={(event) => update("distributionPaths", event.target.value)}
+              required
+            />
+          </div>
+
+          {warnings.length > 0 && (
+            <div className="space-y-2" role="alert">
+              {warnings.map((warning) => (
+                <div
+                  key={warning}
+                  className="rounded-md border border-yellow-300 bg-yellow-50 px-3 py-2 text-sm text-yellow-900 dark:border-yellow-900/60 dark:bg-yellow-950/40 dark:text-yellow-200"
+                >
+                  {warning}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <details className="space-y-4 rounded-md border p-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              Advanced Debian/APT settings
+            </summary>
+            <div className="mt-4 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor={`${idPrefix}-debian-components`}>Components</Label>
+                  <Input
+                    id={`${idPrefix}-debian-components`}
+                    placeholder="main, universe"
+                    value={values.components}
+                    onChange={(event) => update("components", event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">{DEBIAN_FILTER_HELPER}</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`${idPrefix}-debian-architectures`}>Architectures</Label>
+                  <Input
+                    id={`${idPrefix}-debian-architectures`}
+                    placeholder="amd64, arm64"
+                    value={values.architectures}
+                    onChange={(event) => update("architectures", event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">{DEBIAN_FILTER_HELPER}</p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor={`${idPrefix}-debian-metadata-strategy`}>Metadata strategy</Label>
+                  <Select
+                    value={values.metadataStrategy}
+                    onValueChange={(value) => {
+                      const strategy = value as DebianMetadataStrategy;
+                      if (strategy === "filter_generate_and_sign") {
+                        onChange({
+                          ...values,
+                          metadataStrategy: strategy,
+                          verifyUpstreamMetadata: true,
+                        });
+                      } else {
+                        update("metadataStrategy", strategy);
+                      }
+                    }}
+                  >
+                    <SelectTrigger id={`${idPrefix}-debian-metadata-strategy`} className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="upstream_passthrough">Upstream passthrough</SelectItem>
+                      <SelectItem value="filter_and_generate">Filter and generate</SelectItem>
+                      <SelectItem value="filter_generate_and_sign">Filter, generate, and sign</SelectItem>
+                      <SelectItem value="hosted_generate">Hosted generate</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {isRemote && (
+                  <div className="space-y-2">
+                    <Label htmlFor={`${idPrefix}-debian-package-fetch-strategy`}>
+                      Package fetch strategy
+                    </Label>
+                    <Select
+                      value={values.packageFetchStrategy}
+                      onValueChange={(value) =>
+                        update("packageFetchStrategy", value as DebianPackageFetchStrategy)
+                      }
+                    >
+                      <SelectTrigger id={`${idPrefix}-debian-package-fetch-strategy`} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="cache_on_request">Cache on request</SelectItem>
+                        <SelectItem value="prefetch_selected">Prefetch selected</SelectItem>
+                        <SelectItem value="passthrough">Passthrough</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="flex items-center gap-3">
+                  <Switch
+                    id={`${idPrefix}-debian-source-packages`}
+                    checked={values.includeSourcePackages}
+                    onCheckedChange={(checked) => update("includeSourcePackages", checked)}
+                  />
+                  <Label htmlFor={`${idPrefix}-debian-source-packages`}>
+                    Include source packages
+                  </Label>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <Switch
+                      id={`${idPrefix}-debian-flat-repository`}
+                      checked={values.flatRepository}
+                      onCheckedChange={(checked) => update("flatRepository", checked)}
+                    />
+                    <Label htmlFor={`${idPrefix}-debian-flat-repository`}>Flat repository</Label>
+                  </div>
+                  <p className="pl-10 text-xs text-muted-foreground">
+                    Single distribution path ending with <code>/</code>; components must be all or empty.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Switch
+                    id={`${idPrefix}-debian-verify-upstream`}
+                    checked={values.verifyUpstreamMetadata}
+                    onCheckedChange={(checked) => update("verifyUpstreamMetadata", checked)}
+                  />
+                  <Label htmlFor={`${idPrefix}-debian-verify-upstream`}>
+                    Verify upstream metadata
+                  </Label>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Switch
+                    id={`${idPrefix}-debian-ignore-missing`}
+                    checked={values.ignoreMissingIndexes}
+                    onCheckedChange={(checked) => update("ignoreMissingIndexes", checked)}
+                  />
+                  <Label htmlFor={`${idPrefix}-debian-ignore-missing`}>Ignore missing indexes</Label>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor={`${idPrefix}-debian-package-queries`}>Package queries</Label>
+                <Textarea
+                  id={`${idPrefix}-debian-package-queries`}
+                  placeholder="nginx, curl*, openssh-*"
+                  value={values.packageQueries}
+                  onChange={(event) => update("packageQueries", event.target.value)}
+                  rows={2}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Comma or newline separated. Exact names or trailing <code>*</code> globs.
+                  Leave blank to include all packages matching component/architecture filters.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Switch
+                  id={`${idPrefix}-debian-resolve-deps`}
+                  checked={values.resolveDependencies}
+                  onCheckedChange={(checked) => update("resolveDependencies", checked)}
+                  disabled={!values.packageQueries.trim()}
+                />
+                <Label htmlFor={`${idPrefix}-debian-resolve-deps`}>
+                  Resolve dependencies for package queries
+                </Label>
+              </div>
+
+              {values.verifyUpstreamMetadata && (
+                <div className="space-y-2">
+                  <Label htmlFor={`${idPrefix}-debian-upstream-gpg-key`}>Upstream GPG key</Label>
+                  <Input
+                    id={`${idPrefix}-debian-upstream-gpg-key`}
+                    placeholder="ubuntu-archive-key or fingerprint"
+                    value={values.upstreamGpgKeyId}
+                    onChange={(event) => update("upstreamGpgKeyId", event.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Name, fingerprint, or key ID of a stored public trust anchor.
+                    Import the archive public key from Signing Keys → Import public key.
+                  </p>
+                </div>
+              )}
+
+              {values.metadataStrategy === "filter_generate_and_sign" && (
+                <div className="space-y-2">
+                  <Label htmlFor={`${idPrefix}-debian-signing-key`}>Signing key</Label>
+                  <Input
+                    id={`${idPrefix}-debian-signing-key`}
+                    placeholder="signing key UUID"
+                    value={values.signingKeyId}
+                    onChange={(event) => update("signingKeyId", event.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Must be a key with private material (can_sign). Public-only trust
+                    anchors can verify upstream but cannot re-sign metadata.
+                  </p>
+                </div>
+              )}
+            </div>
+          </details>
+        </>
+      )}
+    </div>
+  );
+}
 interface RepoDialogsProps {
   createOpen: boolean;
   onCreateOpenChange: (open: boolean) => void;
@@ -64,7 +494,7 @@ interface RepoDialogsProps {
   editOpen: boolean;
   onEditOpenChange: (open: boolean) => void;
   editRepo: Repository | null;
-  onEditSubmit: (key: string, data: { key?: string; name: string; description: string; is_public: boolean; quota_bytes?: number }) => void;
+  onEditSubmit: (key: string, data: Partial<CreateRepositoryRequest>) => void;
   editPending: boolean;
   onUpstreamAuthUpdate?: (key: string, payload: { auth_type: string; username?: string; password?: string }) => void;
   upstreamAuthPending?: boolean;
@@ -128,6 +558,9 @@ export function RepoDialogs({
   const [upstreamAuthType, setUpstreamAuthType] = useState<string>("none");
   const [upstreamUsername, setUpstreamUsername] = useState("");
   const [upstreamPassword, setUpstreamPassword] = useState("");
+  const [createDebianForm, setCreateDebianForm] =
+    useState<DebianFormValues>(EMPTY_DEBIAN_FORM);
+  const [createDebianEnabled, setCreateDebianEnabled] = useState(false);
 
   /**
    * Suggest a default upstream URL when the repo type is "remote".
@@ -152,6 +585,11 @@ export function RepoDialogs({
   const [editAuthUsername, setEditAuthUsername] = useState("");
   const [editAuthPassword, setEditAuthPassword] = useState("");
   const [removeAuthConfirm, setRemoveAuthConfirm] = useState(false);
+  const [editDebianOverrides, setEditDebianOverrides] =
+    useState<Partial<DebianFormValues>>({});
+  const [editDebianUpstreamOverride, setEditDebianUpstreamOverride] =
+    useState<string>();
+  const [editDebianEnabledOverride, setEditDebianEnabledOverride] = useState<boolean>();
 
   // Focus management for the upstream-auth view <-> edit toggle (#412).
   // When the user switches modes the previously focused control unmounts, so
@@ -218,6 +656,14 @@ export function RepoDialogs({
     is_public?: boolean;
   }>({});
   const editForm = { ...editFormDefaults, ...editFormOverrides };
+  const editDebianDefaults = useMemo(
+    () => debianConfigToForm(editRepo?.debian),
+    [editRepo],
+  );
+  const editDebianForm = { ...editDebianDefaults, ...editDebianOverrides };
+  const editDebianEnabled = editDebianEnabledOverride ?? Boolean(editRepo?.debian);
+  const editDebianUpstreamUrl =
+    editDebianUpstreamOverride ?? editRepo?.upstream_url ?? "";
   const editKeyChanged = editRepo ? editForm.key !== editRepo.key : false;
 
   const resetCreateForm = () => {
@@ -237,19 +683,22 @@ export function RepoDialogs({
     setUpstreamAuthType("none");
     setUpstreamUsername("");
     setUpstreamPassword("");
+    setCreateDebianForm(EMPTY_DEBIAN_FORM);
+    setCreateDebianEnabled(false);
   };
 
-  // Reset the create form whenever the dialog opens. The parent flips
+  // Reset the create form whenever the dialog closes. The parent flips
   // `createOpen` back to false programmatically on a successful submit
   // (mutation onSuccess), but Radix Dialog does NOT fire onOpenChange for
   // programmatic close — so handleCreateClose's reset path is bypassed and
   // stale form values would otherwise persist into the next open.
   useEffect(() => {
-    if (createOpen) {
+    if (!createOpen) {
+      // Closing is also driven programmatically after successful mutations;
+      // reset all draft-only fields at that boundary.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       resetCreateForm();
     }
-    // resetCreateForm only sets local state via stable setters; safe to omit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createOpen]);
 
   // Build member_repos array from selected keys
@@ -271,7 +720,7 @@ export function RepoDialogs({
   return (
     <>
       <Dialog open={createOpen} onOpenChange={handleCreateClose}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Create Repository</DialogTitle>
             <DialogDescription>
@@ -287,6 +736,11 @@ export function RepoDialogs({
                 quota_bytes: quotaToBytes(createQuotaValue, createQuotaUnit) ?? undefined,
                 upstream_url: createForm.repo_type === "remote" ? createForm.upstream_url : undefined,
                 member_repos: createForm.repo_type === "virtual" ? buildMemberRepos() : undefined,
+                ...(createForm.format === "debian" &&
+                (createForm.repo_type === "local" || createForm.repo_type === "remote") &&
+                createDebianEnabled
+                  ? { debian: buildDebianConfig(createDebianForm) }
+                  : {}),
               };
               if (createForm.repo_type === "remote" && upstreamAuthType !== "none") {
                 submitData.upstream_auth_type = upstreamAuthType;
@@ -424,6 +878,18 @@ export function RepoDialogs({
                 </p>
               </div>
             )}
+
+            {createForm.format === "debian" &&
+              (createForm.repo_type === "local" || createForm.repo_type === "remote") && (
+                <DebianConfigFields
+                  idPrefix="create"
+                  values={createDebianForm}
+                  onChange={setCreateDebianForm}
+                  enabled={createDebianEnabled}
+                  onEnabledChange={setCreateDebianEnabled}
+                  isRemote={createForm.repo_type === "remote"}
+                />
+              )}
 
             {/* Remote repository: upstream authentication */}
             {createForm.repo_type === "remote" && (
@@ -589,10 +1055,13 @@ export function RepoDialogs({
           setEditAuthUsername("");
           setEditAuthPassword("");
           setRemoveAuthConfirm(false);
+          setEditDebianOverrides({});
+          setEditDebianUpstreamOverride(undefined);
+          setEditDebianEnabledOverride(undefined);
         }
         onEditOpenChange(open);
       }}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Edit Repository: {editRepo?.key}</DialogTitle>
             <DialogDescription>
@@ -609,6 +1078,15 @@ export function RepoDialogs({
                   ...rest,
                   ...(editKeyChanged ? { key: formKey } : {}),
                   quota_bytes: quotaToBytes(editQuotaValue, editQuotaUnit) ?? undefined,
+                  ...(editRepo.format === "debian" && editRepo.repo_type === "remote"
+                    ? { upstream_url: editDebianUpstreamUrl.trim() }
+                    : {}),
+                  ...(editRepo.format === "debian" &&
+                  (editRepo.repo_type === "local" || editRepo.repo_type === "remote")
+                    ? editDebianEnabled
+                      ? { debian: buildDebianConfig(editDebianForm) }
+                      : { debian: null }
+                    : {}),
                 });
               }
             }}
@@ -698,6 +1176,35 @@ export function RepoDialogs({
                 Maximum storage for this repository. Leave empty for no limit.
               </p>
             </div>
+
+            {editRepo?.format === "debian" &&
+              (editRepo.repo_type === "local" || editRepo.repo_type === "remote") && (
+                <>
+                  {editRepo.repo_type === "remote" && (
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-debian-upstream">Upstream URL</Label>
+                      <Input
+                        id="edit-debian-upstream"
+                        type="url"
+                        value={editDebianUpstreamUrl}
+                        onChange={(event) =>
+                          setEditDebianUpstreamOverride(event.target.value)
+                        }
+                        placeholder="https://deb.debian.org/debian"
+                        required
+                      />
+                    </div>
+                  )}
+                  <DebianConfigFields
+                    idPrefix="edit"
+                    values={editDebianForm}
+                    onChange={setEditDebianOverrides}
+                    enabled={editDebianEnabled}
+                    onEnabledChange={setEditDebianEnabledOverride}
+                    isRemote={editRepo.repo_type === "remote"}
+                  />
+                </>
+              )}
 
             {/* Upstream authentication for remote repos (saved separately from main form) */}
             {editRepo?.repo_type === "remote" && (

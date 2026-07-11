@@ -14,7 +14,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import signingApi, { type SigningKey, type CreateSigningKeyRequest } from "@/lib/api/signing";
+import signingApi, {
+  type SigningKey,
+  type CreateSigningKeyRequest,
+  type ImportPublicKeyRequest,
+} from "@/lib/api/signing";
 import { mutationErrorToast, toUserMessage } from "@/lib/error-utils";
 import { useAuth } from "@/providers/auth-provider";
 
@@ -53,7 +57,12 @@ export default function SigningPage() {
   const queryClient = useQueryClient();
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [form, setForm] = useState<CreateSigningKeyRequest>(emptyForm);
+  const [importForm, setImportForm] = useState<ImportPublicKeyRequest>({
+    name: "",
+    public_key: "",
+  });
   const [viewKey, setViewKey] = useState<SigningKey | null>(null);
   const [rotateTarget, setRotateTarget] = useState<SigningKey | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<SigningKey | null>(null);
@@ -76,6 +85,17 @@ export default function SigningPage() {
       toast.success(`Signing key "${key.name}" created`);
     },
     onError: mutationErrorToast("Failed to create signing key"),
+  });
+
+  const importMutation = useMutation({
+    mutationFn: (req: ImportPublicKeyRequest) => signingApi.importPublicKey(req),
+    onSuccess: (key) => {
+      invalidate();
+      setImportOpen(false);
+      setImportForm({ name: "", public_key: "" });
+      toast.success(`Trust anchor "${key.name}" imported`);
+    },
+    onError: mutationErrorToast("Failed to import public key"),
   });
 
   const rotateMutation = useMutation({
@@ -118,6 +138,10 @@ export default function SigningPage() {
   }
 
   const canCreate = form.name.trim() !== "" && !createMutation.isPending;
+  const canImport =
+    importForm.name.trim() !== "" &&
+    importForm.public_key.trim() !== "" &&
+    !importMutation.isPending;
 
   function submitCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -127,6 +151,18 @@ export default function SigningPage() {
     if (form.uid_name?.trim()) req.uid_name = form.uid_name.trim();
     if (form.uid_email?.trim()) req.uid_email = form.uid_email.trim();
     createMutation.mutate(req);
+  }
+
+  function submitImport(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canImport) return;
+    const req: ImportPublicKeyRequest = {
+      name: importForm.name.trim(),
+      public_key: importForm.public_key.trim(),
+    };
+    if (importForm.uid_name?.trim()) req.uid_name = importForm.uid_name.trim();
+    if (importForm.uid_email?.trim()) req.uid_email = importForm.uid_email.trim();
+    importMutation.mutate(req);
   }
 
   return (
@@ -141,10 +177,15 @@ export default function SigningPage() {
             </p>
           </div>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4" />
-          New Key
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)}>
+            Import public key
+          </Button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
+            New Key
+          </Button>
+        </div>
       </div>
 
       {isLoading && (
@@ -170,7 +211,9 @@ export default function SigningPage() {
         <div className="flex flex-col items-center justify-center rounded-md border border-dashed py-12 text-center text-muted-foreground">
           <FileSignature className="size-8 mb-2 opacity-50" />
           <p className="text-sm">No signing keys yet.</p>
-          <p className="text-xs">Create one to start signing artifacts.</p>
+          <p className="text-xs">
+            Create a keypair to sign artifacts, or import a public archive key for upstream verification.
+          </p>
         </div>
       )}
 
@@ -178,10 +221,15 @@ export default function SigningPage() {
         <ul className="divide-y rounded-md border">
           {keys!.map((key) => (
             <li key={key.id} className="flex items-center justify-between gap-4 px-4 py-3">
-              <div className="min-w-0">
+                <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="truncate font-medium">{key.name}</span>
                   <Badge variant="outline" className="uppercase">{key.key_type}</Badge>
+                  {key.can_sign ? (
+                    <Badge variant="outline">can sign</Badge>
+                  ) : (
+                    <Badge variant="outline">trust anchor</Badge>
+                  )}
                   {key.is_active ? (
                     <Badge variant="secondary">active</Badge>
                   ) : (
@@ -191,14 +239,21 @@ export default function SigningPage() {
                 <p className="truncate font-mono text-xs text-muted-foreground">
                   {key.fingerprint ?? key.key_id ?? key.algorithm}
                 </p>
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <span className="font-sans">ID</span>
+                  <span className="font-mono">{key.id}</span>
+                  <CopyButton value={key.id} />
+                </p>
               </div>
               <div className="flex items-center gap-1">
                 <Button variant="ghost" size="icon-sm" aria-label={`View public key for ${key.name}`} onClick={() => setViewKey(key)}>
                   <Eye className="size-4" />
                 </Button>
-                <Button variant="ghost" size="icon-sm" aria-label={`Rotate ${key.name}`} onClick={() => setRotateTarget(key)}>
-                  <RotateCcw className="size-4" />
-                </Button>
+                {key.can_sign && (
+                  <Button variant="ghost" size="icon-sm" aria-label={`Rotate ${key.name}`} onClick={() => setRotateTarget(key)}>
+                    <RotateCcw className="size-4" />
+                  </Button>
+                )}
                 {key.is_active && (
                   <Button variant="ghost" size="icon-sm" aria-label={`Revoke ${key.name}`} onClick={() => setRevokeTarget(key)}>
                     <Ban className="size-4 text-amber-500" />
@@ -212,6 +267,51 @@ export default function SigningPage() {
           ))}
         </ul>
       )}
+
+      {/* Import public trust anchor */}
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent>
+          <form onSubmit={submitImport}>
+            <DialogHeader>
+              <DialogTitle>Import public key</DialogTitle>
+              <DialogDescription>
+                Store a public-only OpenPGP trust anchor (for example a Debian or Ubuntu
+                archive key). It can verify upstream metadata but cannot sign.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="import-key-name">Name</Label>
+                <Input
+                  id="import-key-name"
+                  value={importForm.name}
+                  onChange={(e) => setImportForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="ubuntu-archive-key"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="import-public-key">ASCII-armored public key</Label>
+                <textarea
+                  id="import-public-key"
+                  className="min-h-40 w-full rounded-md border bg-transparent px-3 py-2 font-mono text-xs"
+                  value={importForm.public_key}
+                  onChange={(e) => setImportForm((f) => ({ ...f, public_key: e.target.value }))}
+                  placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setImportOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!canImport}>
+                {importMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                Import
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Create dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

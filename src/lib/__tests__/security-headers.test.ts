@@ -22,37 +22,45 @@ describe("buildContentSecurityPolicy", () => {
 
   it("keeps all transport-agnostic directives in both modes", () => {
     for (const csp of [
-      buildContentSecurityPolicy(false),
-      buildContentSecurityPolicy(true),
+      buildContentSecurityPolicy(false, false),
+      buildContentSecurityPolicy(true, false),
     ]) {
       expect(csp).toContain("default-src 'self'");
       expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+      expect(csp).not.toContain("unsafe-eval");
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
       expect(csp).toContain("img-src 'self' data: blob:");
       expect(csp).toContain("font-src 'self' data:");
       expect(csp).toContain("connect-src 'self'");
+      expect(csp).not.toContain("ws:");
       expect(csp).toContain("frame-ancestors 'none'");
       expect(csp).toContain("base-uri 'self'");
       expect(csp).toContain("form-action 'self'");
     }
   });
 
+  it("relaxes script-src and connect-src for local development", () => {
+    const csp = buildContentSecurityPolicy(false, true);
+    expect(csp).toContain("script-src 'self' 'unsafe-inline' 'unsafe-eval'");
+    expect(csp).toContain("connect-src 'self' ws: wss:");
+  });
+
   it("never produces a malformed trailing separator", () => {
-    expect(buildContentSecurityPolicy(false).endsWith(";")).toBe(false);
-    expect(buildContentSecurityPolicy(false)).not.toContain(";;");
-    expect(buildContentSecurityPolicy(false).trimEnd()).toBe(
-      buildContentSecurityPolicy(false),
+    expect(buildContentSecurityPolicy(false, false).endsWith(";")).toBe(false);
+    expect(buildContentSecurityPolicy(false, false)).not.toContain(";;");
+    expect(buildContentSecurityPolicy(false, false).trimEnd()).toBe(
+      buildContentSecurityPolicy(false, false),
     );
     // form-action is the last directive when HTTPS is off.
-    expect(buildContentSecurityPolicy(false).endsWith("form-action 'self'")).toBe(
-      true,
-    );
+    expect(
+      buildContentSecurityPolicy(false, false).endsWith("form-action 'self'"),
+    ).toBe(true);
   });
 });
 
 describe("buildSecurityHeaders", () => {
   it("omits HSTS and upgrade-insecure-requests when HTTPS is disabled", () => {
-    const map = headerMap(buildSecurityHeaders(false));
+    const map = headerMap(buildSecurityHeaders(false, false));
     expect(map["Strict-Transport-Security"]).toBeUndefined();
     expect(map["Content-Security-Policy"]).not.toContain(
       "upgrade-insecure-requests",
@@ -60,7 +68,7 @@ describe("buildSecurityHeaders", () => {
   });
 
   it("emits HSTS and upgrade-insecure-requests when HTTPS is enabled", () => {
-    const map = headerMap(buildSecurityHeaders(true));
+    const map = headerMap(buildSecurityHeaders(true, false));
     expect(map["Strict-Transport-Security"]).toBe(
       "max-age=31536000; includeSubDomains",
     );
@@ -71,8 +79,8 @@ describe("buildSecurityHeaders", () => {
 
   it("always emits the transport-agnostic hardening headers in both modes", () => {
     for (const map of [
-      headerMap(buildSecurityHeaders(false)),
-      headerMap(buildSecurityHeaders(true)),
+      headerMap(buildSecurityHeaders(false, false)),
+      headerMap(buildSecurityHeaders(true, false)),
     ]) {
       expect(map["X-Frame-Options"]).toBe("DENY");
       expect(map["X-Content-Type-Options"]).toBe("nosniff");

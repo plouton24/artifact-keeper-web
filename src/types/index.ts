@@ -73,10 +73,69 @@ export interface Repository {
   upstream_url?: string;
   upstream_auth_type?: string | null;
   upstream_auth_configured?: boolean;
+  // Debian/APT repository filtering and metadata configuration.
+  debian?: DebianRepositoryConfig;
+  // Legacy API field accepted while older backends/generated SDKs are still in use.
+  debian_config?: DebianRepositoryConfig;
   // For virtual repositories
   member_repos?: VirtualRepoMember[];
   created_at: string;
   updated_at: string;
+}
+
+export type DebianMetadataStrategy =
+  | 'upstream_passthrough'
+  | 'filter_and_generate'
+  | 'filter_generate_and_sign'
+  | 'hosted_generate';
+
+export type DebianPackageFetchStrategy =
+  | 'cache_on_request'
+  | 'prefetch_selected'
+  | 'passthrough';
+
+export interface DebianRepositoryConfig {
+  distribution_paths: string[];
+  components?: string[];
+  architectures?: string[];
+  include_source_packages?: boolean;
+  flat_repository?: boolean;
+  verify_upstream_metadata?: boolean;
+  upstream_gpg_key_id?: string | null;
+  metadata_strategy?: DebianMetadataStrategy;
+  package_fetch_strategy?: DebianPackageFetchStrategy;
+  ignore_missing_indexes?: boolean;
+  /** Package name queries (exact or trailing `*` glob). Empty = all packages. */
+  package_queries?: string[];
+  /** When package_queries is set, include Depends/Pre-Depends closure during sync. */
+  resolve_dependencies?: boolean;
+  signing_key_id?: string | null;
+  // Hydrated, read-only helpers returned by the backend.
+  warnings?: string[];
+  apt_source_example?: string;
+  public_key_url?: string;
+  metadata_paths?: string[];
+  upload_endpoint?: string;
+  upload_path_template?: string;
+  upload_metadata_headers?: string[];
+}
+
+export interface DebianSyncPlanSummary {
+  distribution: string;
+  release_paths?: string[];
+  package_indexes?: unknown[];
+  source_indexes?: unknown[];
+  package_files?: unknown[];
+  source_files?: unknown[];
+  missing_package_indexes?: string[];
+  missing_source_indexes?: string[];
+}
+
+export interface DebianSyncResponse {
+  repository: string;
+  plans: DebianSyncPlanSummary[];
+  prefetched_packages: number;
+  prefetched_sources: number;
 }
 
 export type RepositoryFormat =
@@ -150,6 +209,10 @@ export interface CreateRepositoryRequest {
   upstream_auth_type?: string;
   upstream_username?: string;
   upstream_password?: string;
+  // Only valid when format is Debian/APT. Pass null to explicitly clear config.
+  debian?: DebianRepositoryConfig | null;
+  // Legacy request alias retained for callers not yet migrated.
+  debian_config?: DebianRepositoryConfig | null;
   // For virtual repositories - array of member repo keys with priorities
   member_repos?: VirtualRepoMemberInput[];
 }

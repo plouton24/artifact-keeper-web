@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../fetch", () => ({ assertData: <T,>(d: T) => d }));
+const apiFetch = vi.fn();
+vi.mock("../fetch", () => ({
+  assertData: <T,>(d: T) => d,
+  apiFetch: (...a: unknown[]) => apiFetch(...a),
+}));
 vi.mock("@/lib/sdk-client", () => ({}));
 
 const m = {
@@ -38,6 +42,7 @@ const SDK_KEY = {
   fingerprint: "AB12",
   key_id: null,
   public_key_pem: "-----BEGIN-----",
+  can_sign: true,
   is_active: true,
   uid_name: null,
   uid_email: undefined,
@@ -54,7 +59,13 @@ describe("signingApi", () => {
     m.listKeys.mockResolvedValue({ data: { keys: [SDK_KEY], total: 1 }, error: undefined });
     const out = await signingApi.listKeys();
     expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ id: "k1", key_type: "gpg", uid_email: null, fingerprint: "AB12" });
+    expect(out[0]).toMatchObject({
+      id: "k1",
+      key_type: "gpg",
+      uid_email: null,
+      fingerprint: "AB12",
+      can_sign: true,
+    });
   });
 
   it("listKeys throws on error", async () => {
@@ -99,6 +110,26 @@ describe("signingApi", () => {
   it("getPublicKeyPem returns the PEM string", async () => {
     m.getPublicKey.mockResolvedValue({ data: "-----PEM-----", error: undefined });
     expect(await signingApi.getPublicKeyPem("k1")).toBe("-----PEM-----");
+  });
+
+  it("importPublicKey posts to /keys/import-public and adapts the key", async () => {
+    apiFetch.mockResolvedValue({ ...SDK_KEY, can_sign: false, algorithm: "public-only" });
+    const out = await signingApi.importPublicKey({
+      name: "ubuntu-archive-key",
+      public_key: "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+    });
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/api/v1/signing/keys/import-public",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "ubuntu-archive-key",
+          public_key: "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+        }),
+      }),
+    );
+    expect(out.can_sign).toBe(false);
+    expect(out.name).toBe("release");
   });
 
   it("getRepoConfig adapts the config incl. resolved key", async () => {

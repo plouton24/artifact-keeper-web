@@ -32,6 +32,11 @@ export interface SecurityHeader {
  * configuration. The long-term fix is to switch to nonce-based CSP via
  * next.config.ts experimental.serverActions or a custom Document with
  * per-request nonces.
+ *
+ * In development, React/Next also require 'unsafe-eval' (call-stack
+ * reconstruction) and ws:/wss: on connect-src (Turbopack/webpack HMR).
+ * Without those the login page never finishes hydrating and API fetches
+ * appear to hang with "Failed to fetch" / CSP console errors.
  */
 const BASE_CSP_DIRECTIVES: readonly string[] = [
   "default-src 'self'",
@@ -45,6 +50,11 @@ const BASE_CSP_DIRECTIVES: readonly string[] = [
   "form-action 'self'",
 ];
 
+const DEV_CSP_OVERRIDES: Readonly<Record<string, string>> = {
+  "script-src": "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "connect-src": "connect-src 'self' ws: wss:",
+};
+
 /**
  * Build the `Content-Security-Policy` value. The `upgrade-insecure-requests`
  * directive is only appended when the deployment serves the UI over HTTPS.
@@ -52,8 +62,17 @@ const BASE_CSP_DIRECTIVES: readonly string[] = [
  * Built programmatically from a directive list so dropping the trailing
  * directive can never leave a malformed `"; "` suffix.
  */
-export function buildContentSecurityPolicy(httpsEnabled: boolean): string {
-  const directives = [...BASE_CSP_DIRECTIVES];
+export function buildContentSecurityPolicy(
+  httpsEnabled: boolean,
+  development: boolean = process.env.NODE_ENV !== "production",
+): string {
+  const directives = BASE_CSP_DIRECTIVES.map((directive) => {
+    const name = directive.split(" ", 1)[0]!;
+    if (development && DEV_CSP_OVERRIDES[name]) {
+      return DEV_CSP_OVERRIDES[name]!;
+    }
+    return directive;
+  });
   if (httpsEnabled) {
     directives.push("upgrade-insecure-requests");
   }
@@ -66,7 +85,10 @@ export function buildContentSecurityPolicy(httpsEnabled: boolean): string {
  * When `httpsEnabled` is false (the default), HSTS is omitted and the CSP
  * excludes `upgrade-insecure-requests`; every other header is unconditional.
  */
-export function buildSecurityHeaders(httpsEnabled: boolean): SecurityHeader[] {
+export function buildSecurityHeaders(
+  httpsEnabled: boolean,
+  development: boolean = process.env.NODE_ENV !== "production",
+): SecurityHeader[] {
   const headers: SecurityHeader[] = [
     { key: "X-Frame-Options", value: "DENY" },
     { key: "X-Content-Type-Options", value: "nosniff" },
@@ -87,7 +109,7 @@ export function buildSecurityHeaders(httpsEnabled: boolean): SecurityHeader[] {
 
   headers.push({
     key: "Content-Security-Policy",
-    value: buildContentSecurityPolicy(httpsEnabled),
+    value: buildContentSecurityPolicy(httpsEnabled, development),
   });
 
   return headers;
